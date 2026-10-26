@@ -11,7 +11,7 @@ namespace GlurpOnline
     {
         public const string Guid = "com.glurponline.mod";
         public const string Name = "Glurp Online";
-        public const string Version = "1.0.0";
+        public const string Version = "1.0.1";
 
         public const int ProtocolVersion = 3;
 

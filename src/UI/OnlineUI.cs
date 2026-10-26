@@ -195,6 +195,14 @@ namespace GlurpOnline.UI
             var oldPos = panelRect.anchoredPosition;
             panelRect.sizeDelta = panelSize;
             panelRect.anchoredPosition = new Vector2(oldPos.x, panelY);
+            var underline = (RectTransform)panelRect.Find("Underline");
+            if (underline != null)
+            {
+                float lip = underline.anchoredPosition.y - underline.sizeDelta.y / 2f;
+                float height = underline.sizeDelta.y * panelSize.y / oldSize.y;
+                underline.sizeDelta = new Vector2(underline.sizeDelta.x, height);
+                underline.anchoredPosition = new Vector2(underline.anchoredPosition.x, lip + height / 2f);
+            }
             var title = (RectTransform)root.Find("Title Bar");
             title.anchoredPosition += new Vector2(-(panelSize.x - oldSize.x) / 2f, (panelY + panelSize.y / 2f) - (oldPos.y + oldSize.y / 2f));
 
