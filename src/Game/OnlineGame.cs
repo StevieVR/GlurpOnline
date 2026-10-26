@@ -66,6 +66,17 @@ namespace GlurpOnline.Game
 
         public static bool AllAtOnce;
         public static bool SeeEachOther;
+        public static SharedObjects.Mode Sharing;
+        public static bool Collide;
+
+        private static readonly Dictionary<int, HashSet<ulong>> roundLoaded = new Dictionary<int, HashSet<ulong>>();
+        private static readonly HashSet<int> roundGo = new HashSet<int>();
+        private static bool autoStarted, readyAnnounced;
+        private static float readyStateTime, roundFirstReadyTime;
+        private static readonly System.Reflection.FieldInfo ControllingPlayerLocked =
+            AccessTools.Field(typeof(ControllerManager), "isControllingPlayerLocked");
+
+        public static bool AutoStart => Active && AllAtOnce && IsLocalTurn && TurnManager.currentPlayerIndex == 0;
         public static int GameSeed;
 
         public static int RoundSeed(int round) => unchecked(GameSeed * 31 + round * 7919);
@@ -136,9 +147,11 @@ namespace GlurpOnline.Game
             int difficulty = s.Settings.Difficulty;
             int mode = s.Settings.Mode;
             bool ghosts = s.Settings.SeeEachOther;
+            int sharing = s.Settings.Sharing;
+            bool collide = s.Settings.Collide;
             int seed = new System.Random().Next();
             s.SetPhase(SessionPhase.InGame);
-            if (!StartLocal(roster, rounds, difficulty, mode, ghosts, seed, null)) return;
+            if (!StartLocal(roster, rounds, difficulty, mode, ghosts, sharing, collide, seed, null)) return;
 
             var w = new PacketWriter(Msg.StartGame, s.LocalId);
             RosterIO.Write(w, roster);
@@ -146,6 +159,8 @@ namespace GlurpOnline.Game
             w.Write((byte)difficulty);
             w.Write((byte)mode);
             w.Write(ghosts);
+            w.Write((byte)sharing);
+            w.Write(collide);
             w.Write(seed);
             EventSpec.From(EventRandomiser.currentEvent).Write(w);
             s.Broadcast(w);
@@ -199,7 +214,7 @@ namespace GlurpOnline.Game
             return localIndex == 0 ? name : $"{name} {localIndex + 1}";
         }
 
-        private static bool StartLocal(List<RosterEntry> roster, int rounds, int difficulty, int mode, bool ghosts, int seed, EventSpec spec)
+        private static bool StartLocal(List<RosterEntry> roster, int rounds, int difficulty, int mode, bool ghosts, int sharing, bool collide, int seed, EventSpec spec)
         {
             var gm = GameManager.singleton;
             var s = Session.Current;
@@ -209,11 +224,15 @@ namespace GlurpOnline.Game
             Active = true;
             AllAtOnce = mode == 1;
             SeeEachOther = ghosts;
+            Sharing = AllAtOnce ? (SharedObjects.Mode)Mathf.Clamp(sharing, 0, 2) : SharedObjects.Mode.None;
+            Collide = Sharing == SharedObjects.Mode.Everything && ghosts && collide;
             GameSeed = seed;
             Roster = roster;
             DroppedPeers.Clear();
             flow.Clear();
             readyPeers.Clear();
+            roundLoaded.Clear();
+            roundGo.Clear();
             finishedTurns.Clear();
             early.Clear();
             roundResults.Clear();
@@ -324,6 +343,8 @@ namespace GlurpOnline.Game
             RoundOverShown = false;
             simWaiting = false;
             simMerged = false;
+            autoStarted = false;
+            readyAnnounced = false;
         }
 
         public static void BeforeEventSceneLoad()
@@ -331,6 +352,7 @@ namespace GlurpOnline.Game
             if (!Active) return;
             ResetTurn();
             GhostSync.OnSceneLoading();
+            SharedObjects.OnSceneLoading();
             var cur = TurnManager.CurrentPlayer();
             if (cur == null) return;
             TurnRound = EventRandomiser.playlistIndex;
@@ -352,7 +374,8 @@ namespace GlurpOnline.Game
             SceneLoaded = true;
             sceneLoadedTime = Time.realtimeSinceStartup;
             var s = Session.Current;
-            if (s == null || AllAtOnce) return;
+            if (s == null) return;
+            if (AllAtOnce) return;
             MarkReady(CurrentKey, s.LocalId);
             var w = new PacketWriter(Msg.SceneReady, s.LocalId);
             w.Write((short)TurnRound);
@@ -366,6 +389,76 @@ namespace GlurpOnline.Game
                 early.RemoveAll(b => b.Key == CurrentKey);
                 foreach (var b in mine) HandleTurnMessage(b.Type, b.Origin, new PacketReader(b.Payload, 0, b.Payload.Length));
             }
+        }
+
+        private static void MarkRoundLoaded(int round, ulong peer)
+        {
+            if (!roundLoaded.TryGetValue(round, out var set))
+            {
+                roundLoaded[round] = set = new HashSet<ulong>();
+                roundFirstReadyTime = Time.realtimeSinceStartup;
+            }
+            set.Add(peer);
+            TryStartRound(round, force: false);
+        }
+
+        private static void TryStartRound(int round, bool force)
+        {
+            var s = Session.Current;
+            if (s == null || !s.IsHost || !Active || !AllAtOnce || roundGo.Contains(round)) return;
+            if (!force && RoundWaitingFor(round).Count > 0) return;
+            roundGo.Add(round);
+            var w = new PacketWriter(Msg.RoundGo, s.LocalId);
+            w.Write((short)round);
+            s.Broadcast(w);
+        }
+
+        private static List<string> RoundWaitingFor(int round)
+        {
+            var names = new List<string>();
+            var s = Session.Current;
+            if (s == null) return names;
+            roundLoaded.TryGetValue(round, out var set);
+            foreach (var m in s.Members)
+            {
+                if (!DroppedPeers.Contains(m.Id) && (set == null || !set.Contains(m.Id))) names.Add(m.Name);
+            }
+            return names;
+        }
+
+        public static void EnterReadyStateWithoutScreen()
+        {
+            GameMenu.ExitLevelPanState();
+            ControllingPlayerLocked?.SetValue(null, false);
+            GameMenu.ShowEventInfoUI(false);
+            GameMenu.singleton.state = MenuScreen.PlayerReady;
+            var s = Session.Current;
+            if (s == null || readyAnnounced) return;
+            readyAnnounced = true;
+            readyStateTime = Time.realtimeSinceStartup;
+            var w = new PacketWriter(Msg.RoundReady, s.LocalId);
+            w.Write((short)TurnRound);
+            s.Broadcast(w);
+            MarkRoundLoaded(TurnRound, s.LocalId);
+        }
+
+        private static void UpdateAutoStart(float now)
+        {
+            if (!AutoStart || !SceneLoaded || TurnBegun || autoStarted) return;
+            if (roundLoaded.ContainsKey(TurnRound) && now - roundFirstReadyTime > 20f) TryStartRound(TurnRound, force: true);
+            if (!roundGo.Contains(TurnRound))
+            {
+                var waiting = RoundWaitingFor(TurnRound);
+                if (readyAnnounced && waiting.Count > 0 && now - readyStateTime > 0.5f) InGameUI.ShowStatusBar("Waiting for " + string.Join(", ", waiting.ToArray()));
+                return;
+            }
+            var menu = GameMenu.singleton;
+            if (menu == null || menu.state != MenuScreen.PlayerReady || GlurpTransition.isTransitioning || MenuPanel.IsNavigationDisabled()) return;
+            autoStarted = true;
+            InGameUI.HideStatusBar();
+            menu.state = MenuScreen.PlayMode;
+            ControllingPlayerLocked?.SetValue(null, true);
+            GameManager.StartTurn();
         }
 
         private static void MarkReady(long key, ulong peer)
@@ -662,11 +755,25 @@ namespace GlurpOnline.Game
                             int difficulty = r.ReadByte();
                             int mode = r.ReadByte();
                             bool ghosts = r.ReadBool();
+                            int sharing = r.ReadByte();
+                            bool collide = r.ReadBool();
                             int seed = r.ReadInt();
                             var spec = EventSpec.Read(r);
-                            StartLocal(roster, rounds, difficulty, mode, ghosts, seed, spec);
+                            StartLocal(roster, rounds, difficulty, mode, ghosts, sharing, collide, seed, spec);
                             break;
                         }
+                    case Msg.RoundReady:
+                        MarkRoundLoaded(r.ReadShort(), origin);
+                        break;
+                    case Msg.RoundGo:
+                        if (Session.Current != null && origin == Session.Current.HostId) roundGo.Add(r.ReadShort());
+                        break;
+                    case Msg.ObjClaim:
+                    case Msg.ObjOwner:
+                    case Msg.ObjState:
+                    case Msg.ObjEvent:
+                        SharedObjects.OnMessage(type, origin, r);
+                        break;
                     case Msg.SceneReady:
                         {
                             int round = r.ReadShort(), player = r.ReadShort();
@@ -831,6 +938,8 @@ namespace GlurpOnline.Game
         private static void OnPlayerDropped(ulong peer)
         {
             if (!Active || !DroppedPeers.Add(peer)) return;
+            TryStartRound(TurnRound, force: false);
+            SharedObjects.OnPeerDropped(peer);
             var names = Roster.Where(e => e.Owner == peer).Select(e => e.Name).ToList();
             if (names.Count > 0) Toasts.Show(string.Join(" & ", names.ToArray()) + " left the game");
             var current = TurnManager.CurrentPlayer();
@@ -1008,8 +1117,10 @@ namespace GlurpOnline.Game
             sender?.Update();
             receiver?.Update();
             GhostSync.Update();
+            SharedObjects.Update();
 
             float now = Time.realtimeSinceStartup;
+            UpdateAutoStart(now);
             var em = GameManager.currentEvent;
             if (IsLocalTurn && sender != null && !goRecorded && em != null && em.hasEventStarted)
             {

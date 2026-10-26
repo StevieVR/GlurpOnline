@@ -716,6 +716,10 @@ namespace GlurpOnline.Net
                         }
                         GameMessage?.Invoke(type, origin, r);
                     }
+                    else if (MsgInfo.IsForHostOnly(type))
+                    {
+                        GameMessage?.Invoke(type, origin, r);
+                    }
                     break;
             }
         }

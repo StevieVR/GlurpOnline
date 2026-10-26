@@ -21,6 +21,8 @@ namespace GlurpOnline.UI
         private static readonly string[] DifficultyNames = { "BEGINNER", "INTERMEDIATE", "ADVANCED" };
         private static readonly string[] PrivacyNames = { "FRIENDS ONLY", "PUBLIC", "INVITE ONLY" };
         private static readonly string[] ModeNames = { "TAKE TURNS", "ALL AT ONCE" };
+        private static readonly string[] SharingNames = { "NONE", "PROPS", "EVERYTHING" };
+        private static readonly string[] OffOn = { "OFF", "ON" };
         private const float OptionTop = 1110f;
         private const float OptionSpacing = 330f;
         private const float OptionX = 1560f;
@@ -48,8 +50,14 @@ namespace GlurpOnline.UI
         }
 
         private static readonly List<PlayerRow> playerRows = new List<PlayerRow>();
-        private static UIHorizontalOptions optRounds, optDifficulty, optMode, optGhosts, optPrivacy, optMax, optLocal;
-        private static readonly List<UIHorizontalOptions> lobbyOptions = new List<UIHorizontalOptions>();
+        private static UIHorizontalOptions optRounds, optDifficulty, optPrivacy, optMax, optLocal;
+        private static UIButtonOption gameSettingsRow;
+        private static readonly List<Component> lobbyRows = new List<Component>();
+
+        private static MenuPanel gameSettingsPanel;
+        private static UIHorizontalOptions optMode, optGhosts, optSharing, optCollide;
+        private static readonly List<UIHorizontalOptions> gameOptions = new List<UIHorizontalOptions>();
+        private static TMP_Text gameSettingsInfo, gameSettingsInfo2;
         private static UIArrowButton lobbyArrow;
         private static TMP_Text lobbyStatus, lobbyHint, lobbyModeTab;
         private static Transform lobbyLeaveChip, lobbyInviteChip, lobbyCustomiseChip;
@@ -107,6 +115,7 @@ namespace GlurpOnline.UI
                 BuildMainMenuCard();
                 BuildHub();
                 BuildLobby();
+                BuildGameSettings();
                 BuildBrowser();
                 BuildDirect();
                 BuildInvite();
@@ -444,6 +453,8 @@ namespace GlurpOnline.UI
             MaxPlayers = Mathf.Clamp(Plugin.LobbyMaxPlayers.Value, 2, 16),
             Mode = Mathf.Clamp(Plugin.LobbyMode.Value, 0, 1),
             SeeEachOther = Plugin.LobbySeeEachOther.Value,
+            Sharing = Mathf.Clamp(Plugin.LobbySharing.Value, 0, 2),
+            Collide = Plugin.LobbyCollide.Value,
         };
 
         private static void HostSteamGame()
@@ -516,23 +527,24 @@ namespace GlurpOnline.UI
                 playerRows.Add(rowData);
             }
 
-            lobbyOptions.Clear();
+            lobbyRows.Clear();
             optRounds = MakeOption(content, "ROUNDS", Vector2.zero, OptionScale, false);
             SetOptionValues(optRounds, 1, 20);
             optDifficulty = MakeOption(content, "DIFFICULTY", Vector2.zero, OptionScale, true);
             SetOptionNames(optDifficulty, DifficultyNames);
-            optMode = MakeOption(content, "TURNS", Vector2.zero, OptionScale, true);
-            SetOptionNames(optMode, ModeNames);
-            optGhosts = MakeOption(content, "SEE EACH OTHER", Vector2.zero, OptionScale, false);
-            SetOptionNames(optGhosts, new[] { "OFF", "ON" });
+            gameSettingsRow = MakeButtonRow(content, "Game Settings", Vector2.zero, 3992f);
+            gameSettingsRow.transform.localScale = new Vector3(OptionScale, OptionScale, 1f);
+            SetButtonRow(gameSettingsRow, "GAME SETTINGS", "");
+            UIKit.SetActive(gameSettingsRow.transform, "Value Window", false);
+            UIKit.OnClick(gameSettingsRow, OpenGameSettings);
             optPrivacy = MakeOption(content, "LOBBY", Vector2.zero, OptionScale, true);
             SetOptionNames(optPrivacy, PrivacyNames);
             optMax = MakeOption(content, "MAX PLAYERS", Vector2.zero, OptionScale, false);
             SetOptionValues(optMax, 2, 16);
             optLocal = MakeOption(content, "PLAYERS ON THIS PC", Vector2.zero, OptionScale, false);
             SetOptionValues(optLocal, 1, 4);
-            lobbyOptions.AddRange(new[] { optRounds, optDifficulty, optMode, optGhosts, optPrivacy, optMax, optLocal });
-            foreach (var opt in new[] { optRounds, optDifficulty, optMode, optGhosts, optPrivacy, optMax }) opt.OnValueChanged.AddListener(_ => OnSettingsEdited());
+            lobbyRows.AddRange(new Component[] { optRounds, optDifficulty, gameSettingsRow, optPrivacy, optMax, optLocal });
+            foreach (var opt in new[] { optRounds, optDifficulty, optPrivacy, optMax }) opt.OnValueChanged.AddListener(_ => OnSettingsEdited());
             optLocal.OnValueChanged.AddListener(v =>
             {
                 if (!suppressOptionEvents) Session.Current?.UpdateSelf(m => m.LocalPlayers = v + 1);
@@ -634,8 +646,6 @@ namespace GlurpOnline.UI
                 var settings = s?.Settings ?? SavedSettings();
                 SetOptionIndex(optRounds, settings.Rounds - 1);
                 SetOptionIndex(optDifficulty, settings.Difficulty);
-                SetOptionIndex(optMode, settings.Mode);
-                SetOptionIndex(optGhosts, settings.SeeEachOther ? 1 : 0);
                 SetOptionIndex(optPrivacy, settings.Privacy);
                 SetOptionIndex(optMax, settings.MaxPlayers - 2);
                 SetOptionIndex(optLocal, (s?.Self?.LocalPlayers ?? 1) - 1);
@@ -645,21 +655,19 @@ namespace GlurpOnline.UI
             bool editable = isHost && s.Phase == SessionPhase.Lobby;
             SetOptionEditable(optRounds, editable);
             SetOptionEditable(optDifficulty, editable);
-            SetOptionEditable(optMode, editable);
-            optGhosts.gameObject.SetActive((s?.Settings ?? SavedSettings()).AllAtOnce);
-            SetOptionEditable(optGhosts, editable);
+            gameSettingsRow.interactable = connected;
             SetOptionEditable(optMax, editable);
             optPrivacy.gameObject.SetActive(s == null || s.Kind == SessionKind.Steam);
             SetOptionEditable(optPrivacy, editable && s.Kind == SessionKind.Steam);
             SetOptionEditable(optLocal, connected && s.Phase == SessionPhase.Lobby);
 
             float y = OptionTop;
-            int visibleRows = lobbyOptions.Count(o => o.gameObject.activeSelf);
+            int visibleRows = lobbyRows.Count(o => o.gameObject.activeSelf);
             float spacing = visibleRows > 6 ? 290f : OptionSpacing;
-            foreach (var opt in lobbyOptions)
+            foreach (var row in lobbyRows)
             {
-                if (!opt.gameObject.activeSelf) continue;
-                ((RectTransform)opt.transform).anchoredPosition = new Vector2(OptionX + y * Skew, y);
+                if (!row.gameObject.activeSelf) continue;
+                ((RectTransform)row.transform).anchoredPosition = new Vector2(OptionX + y * Skew, y);
                 y -= spacing;
             }
 
@@ -685,9 +693,7 @@ namespace GlurpOnline.UI
                 bool ready = s.Self != null && s.Self.Ready;
                 arrowLabel = ready ? "NOT READY" : "READY!";
                 status = ready ? $"Waiting for {s.Host?.Name ?? "the host"} to start…" : "Press READY when you're set.";
-                hint = !s.Settings.AllAtOnce ? "Take turns, and watch everyone else's go live."
-                    : s.Settings.SeeEachOther ? "Everyone plays at once and sees the others as ghosts."
-                    : "Everyone plays each event at once on their own screen.";
+                hint = ModeSummary(s.Settings);
             }
             var arrowText = lobbyArrow.transform.Find("Label")?.GetComponent<TMP_Text>();
             if (arrowText != null && arrowText.text != arrowLabel) UIKit.SetText(arrowText, arrowLabel);
@@ -710,6 +716,103 @@ namespace GlurpOnline.UI
             if (lobbyCustomiseChip != null) lobbyCustomiseChip.gameObject.SetActive(connected);
 
             RebuildLobbyNavigation(isHost, connected);
+            RefreshGameSettings();
+        }
+
+        private static string ModeSummary(LobbySettings settings)
+        {
+            if (!settings.AllAtOnce) return "Take turns, and watch everyone else's go live.";
+            if (settings.Sharing == 2) return "Everyone plays at once in one shared level.";
+            if (settings.Sharing == 1) return "Everyone plays at once, sharing loose objects.";
+            return settings.SeeEachOther ? "Everyone plays at once and sees the others as ghosts."
+                : "Everyone plays each event at once on their own screen.";
+        }
+
+        private static void BuildGameSettings()
+        {
+            gameSettingsPanel = CloneLocalMenu("Online Game Settings Menu", "GAME SETTINGS", new Vector2(5800f, 2950f), 330f, out var content);
+            gameOptions.Clear();
+            optMode = MakeOption(content, "TURNS", Vector2.zero, 1f, true);
+            SetOptionNames(optMode, ModeNames);
+            optGhosts = MakeOption(content, "SEE EACH OTHER", Vector2.zero, 1f, false);
+            SetOptionNames(optGhosts, OffOn);
+            optSharing = MakeOption(content, "SHARED OBJECTS", Vector2.zero, 1f, true);
+            SetOptionNames(optSharing, SharingNames);
+            optCollide = MakeOption(content, "PLAYERS COLLIDE", Vector2.zero, 1f, false);
+            SetOptionNames(optCollide, OffOn);
+            gameOptions.AddRange(new[] { optMode, optGhosts, optSharing, optCollide });
+            foreach (var opt in gameOptions) opt.OnValueChanged.AddListener(_ => OnSettingsEdited());
+            gameSettingsInfo = MakeLine(content, new Vector2(-2250f, -880f), 4500f);
+            gameSettingsInfo2 = MakeLine(content, new Vector2(-2250f, -1000f), 4500f);
+            UIKit.SetActive(gameSettingsPanel.transform, "Container/Panel/Column", false);
+        }
+
+        private static void OpenGameSettings()
+        {
+            var s = Session.Current;
+            if (s == null || s.Phase == SessionPhase.Connecting || !MenuIsIdle() || Top() != lobbyPanel) return;
+            RefreshGameSettings();
+            ShowMenu(gameSettingsPanel);
+        }
+
+        private static void RefreshGameSettings()
+        {
+            if (gameSettingsPanel == null) return;
+            var s = Session.Current;
+            var settings = s?.Settings ?? SavedSettings();
+            suppressOptionEvents = true;
+            try
+            {
+                SetOptionIndex(optMode, settings.Mode);
+                SetOptionIndex(optGhosts, settings.SeeEachOther ? 1 : 0);
+                SetOptionIndex(optSharing, settings.Sharing);
+                SetOptionIndex(optCollide, settings.Collide ? 1 : 0);
+            }
+            finally { suppressOptionEvents = false; }
+
+            bool editable = s != null && s.IsHost && s.Phase == SessionPhase.Lobby;
+            optGhosts.gameObject.SetActive(settings.AllAtOnce);
+            optSharing.gameObject.SetActive(settings.AllAtOnce);
+            optCollide.gameObject.SetActive(settings.AllAtOnce && settings.Sharing == 2 && settings.SeeEachOther);
+            foreach (var opt in gameOptions) SetOptionEditable(opt, editable);
+
+            float y = 1000f;
+            foreach (var opt in gameOptions)
+            {
+                if (!opt.gameObject.activeSelf) continue;
+                ((RectTransform)opt.transform).anchoredPosition = new Vector2(y * Skew, y);
+                y -= 470f;
+            }
+
+            DescribeSettings(settings, out string line1, out string line2);
+            if (gameSettingsInfo.text != line1) UIKit.SetText(gameSettingsInfo, line1);
+            if (gameSettingsInfo2.text != line2) UIKit.SetText(gameSettingsInfo2, line2);
+
+            var column = editable ? gameOptions.Where(o => o.gameObject.activeSelf).Select(o => o.GetComponent<Selectable>()).ToList() : new List<Selectable>();
+            UIKit.LinkVertical(column);
+            gameSettingsPanel.SetDefaultOption(column.Count > 0 ? column[0] : null);
+            if (Top() == gameSettingsPanel && MenuIsIdle() && column.Count > 0)
+            {
+                var selected = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
+                if (selected == null || !selected.activeInHierarchy || !selected.transform.IsChildOf(gameSettingsPanel.transform)) column[0].Select();
+            }
+        }
+
+        private static void DescribeSettings(LobbySettings settings, out string line1, out string line2)
+        {
+            if (!settings.AllAtOnce)
+            {
+                line1 = "Everyone takes turns at each event and watches the others' goes live.";
+                line2 = "";
+                return;
+            }
+            line1 = settings.Sharing == 2 && settings.SeeEachOther ? "Everyone plays each event at the same time, together in one level."
+                : settings.SeeEachOther ? "Everyone plays each event at the same time, seeing the others as ghosts."
+                : "Everyone plays each event at the same time on their own screen.";
+            line2 = settings.Sharing == 1 ? "Loose objects like boxes and balls are shared. Anything that scores stays your own."
+                : settings.Sharing == 2 ? (settings.Collide && settings.SeeEachOther ? "Everything is shared, targets and pickups too, and players bump into each other."
+                                          : "Everything is shared, targets and pickups too.")
+                : "Nothing in the level is shared.";
         }
 
         private static void SetRowAlpha(PlayerRow row, float alpha)
@@ -725,8 +828,10 @@ namespace GlurpOnline.UI
             {
                 column.Add(optRounds.GetComponent<Selectable>());
                 column.Add(optDifficulty.GetComponent<Selectable>());
-                column.Add(optMode.GetComponent<Selectable>());
-                if (optGhosts.gameObject.activeSelf) column.Add(optGhosts.GetComponent<Selectable>());
+            }
+            if (connected) column.Add(gameSettingsRow);
+            if (isHost)
+            {
                 if (optPrivacy.gameObject.activeSelf && optPrivacy.GetComponent<Selectable>().interactable) column.Add(optPrivacy.GetComponent<Selectable>());
                 if (optMax.GetComponent<Selectable>().interactable) column.Add(optMax.GetComponent<Selectable>());
             }
@@ -774,9 +879,13 @@ namespace GlurpOnline.UI
                 MaxPlayers = Mathf.Max(optMax.currentIndex + 2, s.TotalPlayers),
                 Mode = optMode.currentIndex,
                 SeeEachOther = optGhosts.currentIndex == 1,
+                Sharing = optSharing.currentIndex,
+                Collide = optCollide.currentIndex == 1,
             };
             Plugin.LobbyMode.Value = settings.Mode;
             Plugin.LobbySeeEachOther.Value = settings.SeeEachOther;
+            Plugin.LobbySharing.Value = settings.Sharing;
+            Plugin.LobbyCollide.Value = settings.Collide;
             Plugin.LobbyRounds.Value = settings.Rounds;
             Plugin.LobbyDifficulty.Value = settings.Difficulty;
             Plugin.LobbyPrivacy.Value = settings.Privacy;
@@ -1017,7 +1126,7 @@ namespace GlurpOnline.UI
 
         public static void OnGameStarting()
         {
-            if (customising) EndCustomise(pop: false);
+            if (customising) EndCustomise(pop: true);
             if (keyboardOpen) CloseKeyboard(pop: false);
         }
 
@@ -1030,6 +1139,7 @@ namespace GlurpOnline.UI
             if (guy == null) return;
             var gm = GameMenu.singleton;
             customising = true;
+            if (!s.IsHost && self.Ready) s.UpdateSelf(m => m.Ready = false);
             MainMenu.mainMenuCustomizeGuy = guy;
             GameManager.isInChallengeMode = true;
             TurnManager.Reset();

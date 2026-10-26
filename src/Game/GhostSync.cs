@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using GlurpOnline.Net;
 using TMPro;
 using UnityEngine;
@@ -26,12 +27,25 @@ namespace GlurpOnline.Game
             public GameObject Root;
             public Guy Guy;
             public Transform[] Bodies;
+            public Collider2D[] Colliders;
+            public bool Solid;
+            public bool CollidersOn;
             public TextMeshPro Tag;
             public Transform Head;
             public int ColorIndex = -1;
             public int Player = -1;
             public readonly List<Snapshot> Snapshots = new List<Snapshot>();
         }
+
+        private const float PushStrength = 30f;
+        private const float MaxOverlap = 0.35f;
+        private static int isolatedLayer = -1;
+        private static Guy pushedGuy;
+        private static Collider2D[] pushedColliders;
+        private static readonly Dictionary<Rigidbody2D, Vector2> pushes = new Dictionary<Rigidbody2D, Vector2>();
+
+        private const short FirstGhostId = -32000;
+        private static short nextGhostId = FirstGhostId;
 
         private static readonly Dictionary<ulong, Ghost> ghosts = new Dictionary<ulong, Ghost>();
         private static readonly List<UnityEngine.Object> loadedAssets = new List<UnityEngine.Object>();
@@ -41,7 +55,6 @@ namespace GlurpOnline.Game
         private static Guy sendingGuy;
         private static Transform[] sendingBodies;
         private static float nextSend;
-        private static float stopSendingAt = -1f;
 
         private static bool Enabled => OnlineGame.Active && OnlineGame.AllAtOnce && OnlineGame.SeeEachOther;
 
@@ -81,15 +94,15 @@ namespace GlurpOnline.Game
         public static void OnSceneLoading()
         {
             ghosts.Clear();
+            nextGhostId = FirstGhostId;
             sendingGuy = null;
             sendingBodies = null;
-            stopSendingAt = -1f;
             foreach (var a in loadedAssets) SyncAddressables.ReleaseLoadedAsset(a);
             loadedAssets.Clear();
             guyPrefab = null;
         }
 
-        public static void OnLocalTurnFinished() => stopSendingAt = Time.realtimeSinceStartup + 2f;
+        public static void OnLocalTurnFinished() { }
 
         public static void Update()
         {
@@ -105,7 +118,6 @@ namespace GlurpOnline.Game
             var em = GameManager.currentEvent;
             if (s == null || em == null || em.guy == null || !OnlineGame.IsLocalTurn || !OnlineGame.SceneLoaded) return;
             float now = Time.realtimeSinceStartup;
-            if (stopSendingAt > 0f && now > stopSendingAt) return;
             if (now < nextSend) return;
             nextSend = now + SendInterval;
             if (!EnsurePrefab()) return;
@@ -150,6 +162,7 @@ namespace GlurpOnline.Game
             }
             if (ghost.Player != player || ghost.ColorIndex != colorIndex) Dress(ghost, player, colorIndex);
             var snaps = ghost.Snapshots;
+            if (ghost.CollidersOn && snaps.Count > 0 && (snaps[snaps.Count - 1].Poses[0] - poses[0]).sqrMagnitude > 9f) SetColliders(ghost, false);
             snaps.Add(new Snapshot { Time = Time.realtimeSinceStartup, Poses = poses });
             if (snaps.Count > 12) snaps.RemoveAt(0);
             if (!ghost.Root.activeSelf) ghost.Root.SetActive(true);
@@ -157,8 +170,19 @@ namespace GlurpOnline.Game
 
         private static Ghost Spawn(Vector3 at)
         {
-            var root = UnityEngine.Object.Instantiate(guyPrefab, new Vector3(at.x, at.y, 0f), Quaternion.identity);
+            var holder = new GameObject("Glurp Online Ghost Holder");
+            holder.SetActive(false);
+            var root = UnityEngine.Object.Instantiate(guyPrefab, new Vector3(at.x, at.y, 0f), Quaternion.identity, holder.transform);
             root.name = "Glurp Online Ghost";
+            foreach (var d in root.GetComponentsInChildren<GlurpAPI.GlurpDynamicObject>(true))
+            {
+                if (d.sceneID != 0) continue;
+                d.sceneID = nextGhostId;
+                nextGhostId = nextGhostId > short.MinValue + 1 ? (short)(nextGhostId - 1) : FirstGhostId;
+            }
+            root.transform.SetParent(null, true);
+            UnityEngine.Object.Destroy(holder);
+
             var guy = root.GetComponent<Guy>();
             if (guy != null)
             {
@@ -166,15 +190,64 @@ namespace GlurpOnline.Game
                 guy.shouldDisableInputOnStart = false;
                 guy.disableEmotes = true;
             }
-            foreach (var rb in root.GetComponentsInChildren<Rigidbody2D>(true)) rb.simulated = false;
+            bool solid = OnlineGame.Collide;
+            var bodies = root.GetComponentsInChildren<Rigidbody2D>(true);
+            var colliders = root.GetComponentsInChildren<Collider2D>(true).Where(c => !c.isTrigger).ToArray();
+            foreach (var rb in bodies)
+            {
+                rb.simulated = solid;
+                if (solid) rb.bodyType = RigidbodyType2D.Kinematic;
+            }
             foreach (var c in root.GetComponentsInChildren<Collider2D>(true)) c.enabled = false;
             foreach (var a in root.GetComponentsInChildren<AudioSource>(true)) a.enabled = false;
             foreach (var rend in root.GetComponentsInChildren<Renderer>(true)) rend.sortingOrder -= 20;
 
-            var ghost = new Ghost { Root = root, Guy = guy, Bodies = MapBodies(root.transform) };
+            var ghost = new Ghost { Root = root, Guy = guy, Bodies = MapBodies(root.transform), Solid = solid, Colliders = colliders };
+            if (solid)
+            {
+                int layer = IsolatedLayer();
+                foreach (var c in colliders) c.gameObject.layer = layer;
+            }
             ghost.Head = guy != null && guy.headRenderer != null ? guy.headRenderer.transform : root.transform;
             ghost.Tag = MakeNameTag(root.transform);
             return ghost;
+        }
+
+        private static int IsolatedLayer()
+        {
+            if (isolatedLayer >= 0) return isolatedLayer;
+            for (int l = 31; l >= 8 && isolatedLayer < 0; l--) if (string.IsNullOrEmpty(LayerMask.LayerToName(l))) isolatedLayer = l;
+            if (isolatedLayer < 0) isolatedLayer = 31;
+            for (int l = 0; l < 32; l++) Physics2D.IgnoreLayerCollision(isolatedLayer, l, true);
+            return isolatedLayer;
+        }
+
+        private static void SetColliders(Ghost ghost, bool on)
+        {
+            ghost.CollidersOn = on;
+            foreach (var c in ghost.Colliders) if (c != null) c.enabled = on;
+        }
+
+        private static void UpdateSolid(Ghost ghost)
+        {
+            if (!ghost.Solid || ghost.CollidersOn || !ghost.Root.activeSelf) return;
+            var guy = GameManager.currentEvent != null ? GameManager.currentEvent.guy : null;
+            if (guy == null) return;
+            if (!Bounds(guy.gameObject, out var mine) || !Bounds(ghost.Root, out var theirs)) return;
+            mine.Expand(0.5f);
+            if (!mine.Intersects(theirs)) SetColliders(ghost, true);
+        }
+
+        private static bool Bounds(GameObject go, out Bounds bounds)
+        {
+            bounds = default;
+            bool any = false;
+            foreach (var r in go.GetComponentsInChildren<SpriteRenderer>())
+            {
+                if (!r.enabled) continue;
+                if (any) bounds.Encapsulate(r.bounds); else { bounds = r.bounds; any = true; }
+            }
+            return any;
         }
 
         private static TextMeshPro MakeNameTag(Transform parent)
@@ -199,7 +272,8 @@ namespace GlurpOnline.Game
             ghost.ColorIndex = colorIndex;
             var colors = GameManager.singleton.playerColors;
             var source = colorIndex >= 0 && colorIndex < colors.Length ? colors[colorIndex] : colors[0];
-            var scheme = new GameManager.PlayerColorScheme
+            bool real = OnlineGame.Sharing == SharedObjects.Mode.Everything;
+            var scheme = real ? source : new GameManager.PlayerColorScheme
             {
                 primary = Ghostly(source.primary),
                 secondary = Ghostly(source.secondary),
@@ -212,10 +286,13 @@ namespace GlurpOnline.Game
                 ghost.Guy.player.colorScheme = scheme;
                 ghost.Guy.ApplyColorScheme(scheme);
             }
-            foreach (var sr in ghost.Root.GetComponentsInChildren<SpriteRenderer>(true))
+            if (!real)
             {
-                var c = sr.color;
-                if (c.a > GhostAlpha) sr.color = new Color(c.r, c.g, c.b, GhostAlpha);
+                foreach (var sr in ghost.Root.GetComponentsInChildren<SpriteRenderer>(true))
+                {
+                    var c = sr.color;
+                    if (c.a > GhostAlpha) sr.color = new Color(c.r, c.g, c.b, GhostAlpha);
+                }
             }
             var entry = OnlineGame.Entry(player);
             if (ghost.Tag != null)
@@ -230,6 +307,43 @@ namespace GlurpOnline.Game
             var pastel = Color.Lerp(c, Color.white, GhostPastel);
             pastel.a = GhostAlpha;
             return pastel;
+        }
+
+        public static void FixedUpdate()
+        {
+            if (!Enabled || !OnlineGame.Collide) return;
+            var guy = GameManager.currentEvent != null ? GameManager.currentEvent.guy : null;
+            if (guy == null) return;
+            if (pushedGuy != guy)
+            {
+                pushedGuy = guy;
+                pushedColliders = guy.GetComponentsInChildren<Collider2D>().Where(c => !c.isTrigger).ToArray();
+            }
+            pushes.Clear();
+            foreach (var g in ghosts.Values)
+            {
+                if (!g.Solid || !g.CollidersOn || g.Root == null || !g.Root.activeSelf) continue;
+                foreach (var mine in pushedColliders)
+                {
+                    var body = mine != null && mine.enabled ? mine.attachedRigidbody : null;
+                    if (body == null || body.bodyType != RigidbodyType2D.Dynamic) continue;
+                    foreach (var theirs in g.Colliders)
+                    {
+                        if (theirs == null || !theirs.enabled) continue;
+                        var d = Physics2D.Distance(mine, theirs);
+                        if (!d.isValid || !d.isOverlapped) continue;
+                        var away = d.normal;
+                        if (Vector2.Dot(away, mine.bounds.center - theirs.bounds.center) < 0f) away = -away;
+                        pushes.TryGetValue(body, out var sum);
+                        pushes[body] = sum + away * Mathf.Min(-d.distance, MaxOverlap);
+                    }
+                }
+            }
+            foreach (var p in pushes)
+            {
+                var push = Vector2.ClampMagnitude(p.Value, MaxOverlap);
+                p.Key.AddForce(push * (PushStrength * p.Key.mass));
+            }
         }
 
         private static void Animate(Ghost g, float now)
@@ -260,10 +374,11 @@ namespace GlurpOnline.Game
                 if (body == null) continue;
                 var pa = a.Poses[i];
                 var pb = b.Poses[i];
-                float z = body.position.z;
-                body.position = new Vector3(Mathf.Lerp(pa.x, pb.x, f), Mathf.Lerp(pa.y, pb.y, f), z);
-                body.rotation = Quaternion.Euler(0f, 0f, Mathf.LerpAngle(pa.z, pb.z, f));
+                var pose = new Vector3(Mathf.Lerp(pa.x, pb.x, f), Mathf.Lerp(pa.y, pb.y, f), Mathf.LerpAngle(pa.z, pb.z, f));
+                body.position = new Vector3(pose.x, pose.y, body.position.z);
+                body.rotation = Quaternion.Euler(0f, 0f, pose.z);
             }
+            UpdateSolid(g);
             if (g.Tag != null && g.Head != null)
             {
                 g.Tag.transform.position = g.Head.position + new Vector3(0f, 1.6f, -0.1f);

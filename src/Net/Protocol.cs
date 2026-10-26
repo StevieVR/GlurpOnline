@@ -27,6 +27,12 @@ namespace GlurpOnline.Net
         BackToLobby = 28,
         StreamEnd = 29,
         GhostState = 30,
+        RoundReady = 31,
+        RoundGo = 32,
+        ObjClaim = 33,
+        ObjOwner = 34,
+        ObjState = 35,
+        ObjEvent = 36,
     }
 
     internal static class MsgInfo
@@ -41,11 +47,16 @@ namespace GlurpOnline.Net
                 case Msg.TurnResult:
                 case Msg.StreamEnd:
                 case Msg.GhostState:
+                case Msg.RoundReady:
+                case Msg.ObjState:
+                case Msg.ObjEvent:
                     return true;
                 default:
                     return false;
             }
         }
+
+        public static bool IsForHostOnly(Msg m) => m == Msg.ObjClaim;
     }
 
     internal sealed class Member
@@ -92,6 +103,8 @@ namespace GlurpOnline.Net
         public int MaxPlayers = 8;
         public int Mode;
         public bool SeeEachOther = true;
+        public int Sharing;
+        public bool Collide;
 
         public bool AllAtOnce => Mode == 1;
 
@@ -103,6 +116,8 @@ namespace GlurpOnline.Net
             w.Write((byte)MaxPlayers);
             w.Write((byte)Mode);
             w.Write(SeeEachOther);
+            w.Write((byte)Sharing);
+            w.Write(Collide);
         }
 
         public static LobbySettings Read(PacketReader r) => new LobbySettings
@@ -113,6 +128,8 @@ namespace GlurpOnline.Net
             MaxPlayers = r.ReadByte(),
             Mode = r.ReadByte(),
             SeeEachOther = r.ReadBool(),
+            Sharing = r.ReadByte(),
+            Collide = r.ReadBool(),
         };
 
         public LobbySettings Clone() => (LobbySettings)MemberwiseClone();

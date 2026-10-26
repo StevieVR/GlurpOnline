@@ -19,6 +19,11 @@ namespace GlurpOnline
             Step("updater", Updater.Update);
         }
 
+        private void FixedUpdate()
+        {
+            Step("ghost physics", GhostSync.FixedUpdate);
+        }
+
         private static void Step(string name, Action action)
         {
             try { action(); }

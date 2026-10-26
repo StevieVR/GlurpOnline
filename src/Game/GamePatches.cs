@@ -128,6 +128,42 @@ namespace GlurpOnline.Game
         private static bool Prefix(ReplayRecorder __instance) => !(OnlineGame.Active && __instance.isRecording);
     }
 
+    [HarmonyPatch(typeof(GlurpEvents.Targets.Target))]
+    internal static class SharedTargetPatches
+    {
+        [HarmonyPrefix, HarmonyPatch("OnCollisionEnter2D")]
+        private static bool Collision(Collision2D __0) => SharedObjects.ShouldCountHit(__0);
+
+        [HarmonyPostfix, HarmonyPatch(nameof(GlurpEvents.Targets.Target.TargetHit))]
+        private static void Hit(GlurpEvents.Targets.Target __instance) => SharedObjects.OnLocalTargetHit(__instance);
+    }
+
+    [HarmonyPatch(typeof(CollectObject), "OnCollisionEnter2D")]
+    internal static class SharedCollectPatch
+    {
+        private static bool Prefix(CollectObject __instance) => SharedObjects.ShouldCollect(__instance);
+    }
+
+    [HarmonyPatch]
+    internal static class RecordEventPatches
+    {
+        [HarmonyPrefix, HarmonyPatch(typeof(ReplayRecorder), nameof(ReplayRecorder.RecordEvent))]
+        private static void Plain(short replayID, byte eventType) =>
+            SharedObjects.OnRecordedEvent(replayID, eventType, ReplayEvent.ReplayDataType.None, Vector3.zero, 0, 0f);
+
+        [HarmonyPrefix, HarmonyPatch(typeof(ReplayRecorder), nameof(ReplayRecorder.RecordVectorEvent))]
+        private static void WithVector(short replayID, byte eventType, Vector3 vectorData) =>
+            SharedObjects.OnRecordedEvent(replayID, eventType, ReplayEvent.ReplayDataType.Vector, vectorData, 0, 0f);
+
+        [HarmonyPrefix, HarmonyPatch(typeof(ReplayRecorder), nameof(ReplayRecorder.RecordShortEvent))]
+        private static void WithShort(short replayID, byte eventType, short shortData) =>
+            SharedObjects.OnRecordedEvent(replayID, eventType, ReplayEvent.ReplayDataType.Short, Vector3.zero, shortData, 0f);
+
+        [HarmonyPrefix, HarmonyPatch(typeof(ReplayRecorder), nameof(ReplayRecorder.RecordFloatEvent))]
+        private static void WithFloat(short replayID, byte eventType, float floatData) =>
+            SharedObjects.OnRecordedEvent(replayID, eventType, ReplayEvent.ReplayDataType.Float, Vector3.zero, 0, floatData);
+    }
+
     [HarmonyPatch(typeof(ReplayRecorder), nameof(ReplayRecorder.StopRecording))]
     internal static class StopRecordingPatch
     {
@@ -175,7 +211,7 @@ namespace GlurpOnline.Game
         private static bool Prefix()
         {
             if (!OnlineGame.Active) return true;
-            if (!OnlineGame.IsLocalTurn) return false;
+            if (!OnlineGame.IsLocalTurn || OnlineGame.AutoStart) return false;
             if (!OnlineGame.AllPeersReady())
             {
                 SoundEffectManager.PlayUploadFailSound();
@@ -194,7 +230,7 @@ namespace GlurpOnline.Game
             switch (__instance.state)
             {
                 case MenuScreen.PlayerReady:
-                    return OnlineGame.IsLocalTurn;
+                    return OnlineGame.IsLocalTurn && !OnlineGame.AutoStart;
                 case MenuScreen.Scoreboard:
                 case MenuScreen.ScoreboardTotals:
                     return (Session.Current != null && Session.Current.IsHost) || !OnlineGame.ScoreboardIsShared;
@@ -246,6 +282,13 @@ namespace GlurpOnline.Game
     [HarmonyPatch(typeof(GameMenu), nameof(GameMenu.ShowPlayerReadyMenu))]
     internal static class ShowPlayerReadyMenuPatch
     {
+        private static bool Prefix()
+        {
+            if (!OnlineGame.AutoStart) return true;
+            OnlineGame.EnterReadyStateWithoutScreen();
+            return false;
+        }
+
         private static void Postfix() => InGameUI.ConfigureReadyScreen();
     }
 

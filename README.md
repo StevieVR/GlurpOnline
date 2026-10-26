@@ -9,9 +9,12 @@ Online multiplayer for **Drink More Glurp**. Host a game and play with friends o
 - **ONLINE** on the main menu: host a game, browse games (friends' games first), or use Direct Connect
 - **Steam invites**: invite friends from the lobby, or join from their profile with *Join Game*
 - **Direct Connect**: games on your local network show up automatically, and you can also type an address (port 27420)
-- **Two ways to play**
+- **Two ways to play**, picked under **Game Settings** in the lobby
   - **Take turns**: everyone watches each turn live as it happens
-  - **All at once**: everyone plays the same event at the same time, and **See each other** shows the other players as ghosts
+  - **All at once**: everyone plays the same event at the same moment, with no waiting on a ready screen
+    - **See each other**: the other players appear in your level
+    - **Shared objects**: *None*, *Props* (boxes, balls and other loose objects are shared) or *Everything* (targets and pickups too, and players appear solid)
+    - **Players collide**: with everything shared, players bump into each other
 - Up to 16 players, with several players per PC
 - **Updates itself**: checks for new releases when the game starts, and passes updates between friends when you join each other
 
