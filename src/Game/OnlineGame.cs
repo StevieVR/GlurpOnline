@@ -71,8 +71,19 @@ namespace GlurpOnline.Game
 
         private static readonly Dictionary<int, HashSet<ulong>> roundLoaded = new Dictionary<int, HashSet<ulong>>();
         private static readonly HashSet<int> roundGo = new HashSet<int>();
-        private static bool autoStarted, readyAnnounced;
+        private static readonly Dictionary<int, float> roundStartAt = new Dictionary<int, float>();
+        private const float GoDelay = 0.5f;
+        private static bool autoStarted, readyAnnounced, goLogged;
         private static float readyStateTime, roundFirstReadyTime;
+        private static int panSkipRound = -1;
+        public static bool ApplyingPanSkip;
+        private static readonly HashSet<int> startGoSent = new HashSet<int>();
+        private static readonly Dictionary<int, float> startPressAt = new Dictionary<int, float>();
+        private static bool startPressSent, startPressApplied;
+        public static bool ApplyingStartPress;
+        private static readonly System.Reflection.MethodInfo StartButtonPressedMethod = AccessTools.Method(typeof(EventManager), "StartButtonPressed");
+        private static readonly AccessTools.FieldRef<EventManager, bool> PanFinished =
+            AccessTools.FieldRefAccess<EventManager, bool>("hasPanFinished");
         private static readonly System.Reflection.FieldInfo ControllingPlayerLocked =
             AccessTools.Field(typeof(ControllerManager), "isControllingPlayerLocked");
 
@@ -233,6 +244,10 @@ namespace GlurpOnline.Game
             readyPeers.Clear();
             roundLoaded.Clear();
             roundGo.Clear();
+            roundStartAt.Clear();
+            panSkipRound = -1;
+            startGoSent.Clear();
+            startPressAt.Clear();
             finishedTurns.Clear();
             early.Clear();
             roundResults.Clear();
@@ -345,6 +360,9 @@ namespace GlurpOnline.Game
             simMerged = false;
             autoStarted = false;
             readyAnnounced = false;
+            goLogged = false;
+            startPressSent = false;
+            startPressApplied = false;
         }
 
         public static void BeforeEventSceneLoad()
@@ -406,12 +424,82 @@ namespace GlurpOnline.Game
         {
             var s = Session.Current;
             if (s == null || !s.IsHost || !Active || !AllAtOnce || roundGo.Contains(round)) return;
+            if (!roundLoaded.TryGetValue(round, out var set) || !set.Contains(s.LocalId)) return;
             if (!force && RoundWaitingFor(round).Count > 0) return;
             roundGo.Add(round);
+            roundStartAt[round] = Time.realtimeSinceStartup + GoDelay;
             var w = new PacketWriter(Msg.RoundGo, s.LocalId);
             w.Write((short)round);
+            w.Write(GoDelay);
             s.Broadcast(w);
         }
+
+        public static void TrySkipPan()
+        {
+            var em = GameManager.currentEvent;
+            if (!AutoStart || !SceneLoaded || panSkipRound != TurnRound || em == null || PanFinished(em)) return;
+            ApplyingPanSkip = true;
+            try { em.OnPanFinished(); }
+            finally { ApplyingPanSkip = false; }
+        }
+
+        public static void OnHostSkippedPan()
+        {
+            var s = Session.Current;
+            var em = GameManager.currentEvent;
+            if (!AutoStart || s == null || !s.IsHost || panSkipRound == TurnRound || em == null || !PanFinished(em)) return;
+            panSkipRound = TurnRound;
+            var w = new PacketWriter(Msg.PanSkip, s.LocalId);
+            w.Write((short)TurnRound);
+            s.Broadcast(w);
+        }
+
+        public static bool OnStartButtonPressed()
+        {
+            var s = Session.Current;
+            if (!AutoStart || ApplyingStartPress || startPressApplied || s == null) return true;
+            if (!startPressAt.ContainsKey(TurnRound))
+            {
+                if (s.IsHost)
+                {
+                    HostStartPress(TurnRound);
+                }
+                else if (!startPressSent)
+                {
+                    startPressSent = true;
+                    var w = new PacketWriter(Msg.StartPress, s.LocalId);
+                    w.Write((short)TurnRound);
+                    s.Send(s.HostId, w);
+                }
+            }
+            return false;
+        }
+
+        private static void HostStartPress(int round)
+        {
+            var s = Session.Current;
+            if (s == null || !s.IsHost || !startGoSent.Add(round)) return;
+            startPressAt[round] = Time.realtimeSinceStartup + GoDelay;
+            var w = new PacketWriter(Msg.StartGo, s.LocalId);
+            w.Write((short)round);
+            w.Write(GoDelay);
+            s.Broadcast(w);
+        }
+
+        private static void UpdateStartPress(float now)
+        {
+            if (!AutoStart || !TurnBegun || startPressApplied || !startPressAt.TryGetValue(TurnRound, out float at) || now < at) return;
+            var em = GameManager.currentEvent;
+            if (em == null) return;
+            startPressApplied = true;
+            if (em.hasEventStarted) return;
+            Plugin.Log.LogInfo($"[sync] round {TurnRound} start button at {DateTime.Now:HH:mm:ss.fff}");
+            ApplyingStartPress = true;
+            try { StartButtonPressedMethod.Invoke(em, null); }
+            finally { ApplyingStartPress = false; }
+        }
+
+        public static bool MaySkipPan => !AutoStart || ApplyingPanSkip || Session.Current == null || Session.Current.IsHost;
 
         private static List<string> RoundWaitingFor(int round)
         {
@@ -445,19 +533,29 @@ namespace GlurpOnline.Game
         private static void UpdateAutoStart(float now)
         {
             if (!AutoStart || !SceneLoaded || TurnBegun || autoStarted) return;
-            if (roundLoaded.ContainsKey(TurnRound) && now - roundFirstReadyTime > 20f) TryStartRound(TurnRound, force: true);
+            TrySkipPan();
+            var s = Session.Current;
+            if (s != null && s.IsHost && readyAnnounced && now - readyStateTime > 20f) TryStartRound(TurnRound, force: true);
             if (!roundGo.Contains(TurnRound))
             {
                 var waiting = RoundWaitingFor(TurnRound);
                 if (readyAnnounced && waiting.Count > 0 && now - readyStateTime > 0.5f) InGameUI.ShowStatusBar("Waiting for " + string.Join(", ", waiting.ToArray()));
                 return;
             }
+            if (roundStartAt.TryGetValue(TurnRound, out float startAt) && now < startAt) return;
             var menu = GameMenu.singleton;
-            if (menu == null || menu.state != MenuScreen.PlayerReady || GlurpTransition.isTransitioning || MenuPanel.IsNavigationDisabled()) return;
+            if (menu == null || GlurpTransition.isTransitioning) return;
+            if (menu.state == MenuScreen.Pause && PrePauseState(menu) == MenuScreen.PlayerReady)
+            {
+                GameMenu.HidePauseMenu();
+                return;
+            }
+            if (menu.state != MenuScreen.PlayerReady || MenuPanel.IsNavigationDisabled()) return;
             autoStarted = true;
             InGameUI.HideStatusBar();
             menu.state = MenuScreen.PlayMode;
             ControllingPlayerLocked?.SetValue(null, true);
+            Plugin.Log.LogInfo($"[sync] round {TurnRound} countdown at {DateTime.Now:HH:mm:ss.fff}");
             GameManager.StartTurn();
         }
 
@@ -766,7 +864,32 @@ namespace GlurpOnline.Game
                         MarkRoundLoaded(r.ReadShort(), origin);
                         break;
                     case Msg.RoundGo:
-                        if (Session.Current != null && origin == Session.Current.HostId) roundGo.Add(r.ReadShort());
+                        {
+                            var s = Session.Current;
+                            if (s == null || origin != s.HostId) return;
+                            int round = r.ReadShort();
+                            float delay = r.ReadFloat();
+                            float ping = s.Self != null && s.Self.PingMs > 0 ? s.Self.PingMs / 1000f : 0f;
+                            roundStartAt[round] = Time.realtimeSinceStartup + Mathf.Max(0f, delay - ping / 2f);
+                            roundGo.Add(round);
+                            break;
+                        }
+                    case Msg.StartPress:
+                        if (Session.Current != null && Session.Current.IsHost) HostStartPress(r.ReadShort());
+                        break;
+                    case Msg.StartGo:
+                        {
+                            var s = Session.Current;
+                            if (s == null || origin != s.HostId) return;
+                            int round = r.ReadShort();
+                            float delay = r.ReadFloat();
+                            float ping = s.Self != null && s.Self.PingMs > 0 ? s.Self.PingMs / 1000f : 0f;
+                            startPressAt[round] = Time.realtimeSinceStartup + Mathf.Max(0f, delay - ping / 2f);
+                            break;
+                        }
+                    case Msg.PanSkip:
+                        if (Session.Current != null && origin == Session.Current.HostId) panSkipRound = r.ReadShort();
+                        TrySkipPan();
                         break;
                     case Msg.ObjClaim:
                     case Msg.ObjOwner:
@@ -854,6 +977,9 @@ namespace GlurpOnline.Game
                         break;
                     case Msg.GhostState:
                         GhostSync.OnGhostState(origin, r);
+                        break;
+                    case Msg.GhostGrab:
+                        GhostSync.OnGhostGrab(origin, r);
                         break;
                 }
             }
@@ -1121,6 +1247,12 @@ namespace GlurpOnline.Game
 
             float now = Time.realtimeSinceStartup;
             UpdateAutoStart(now);
+            UpdateStartPress(now);
+            if (AllAtOnce && IsLocalTurn && autoStarted && !goLogged && GameManager.currentEvent != null && GameManager.currentEvent.hasEventStarted)
+            {
+                goLogged = true;
+                Plugin.Log.LogInfo($"[sync] round {TurnRound} GO at {DateTime.Now:HH:mm:ss.fff}");
+            }
             var em = GameManager.currentEvent;
             if (IsLocalTurn && sender != null && !goRecorded && em != null && em.hasEventStarted)
             {

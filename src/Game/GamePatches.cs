@@ -279,6 +279,36 @@ namespace GlurpOnline.Game
         private static void Postfix(State __state) => OnlineGame.HostAfterScoreboardContinue(__state.Screen, __state.Playlist, __state.Shared);
     }
 
+    [HarmonyPatch(typeof(Guy), nameof(Guy.ApplyColorScheme))]
+    internal static class GhostColorPatch
+    {
+        private static void Prefix(Guy __instance, ref GameManager.PlayerColorScheme scheme) => GhostSync.KeepGhostColors(__instance, ref scheme);
+        private static void Postfix(Guy __instance) => GhostSync.AfterRecolor(__instance);
+    }
+
+    [HarmonyPatch(typeof(EventManager), "StartButtonPressed")]
+    internal static class StartButtonPatch
+    {
+        private static bool Prefix() => OnlineGame.OnStartButtonPressed();
+    }
+
+    [HarmonyPatch(typeof(GameMenu), "OnSkipPanPresed")]
+    internal static class SkipPanPatch
+    {
+        private static bool Prefix() => OnlineGame.MaySkipPan;
+        private static void Postfix() => OnlineGame.OnHostSkippedPan();
+    }
+
+    [HarmonyPatch(typeof(GameMenu), "ShowPanUI")]
+    internal static class ShowPanUIPatch
+    {
+        private static void Postfix(GameMenu __instance)
+        {
+            if (!OnlineGame.MaySkipPan && __instance.panHoldToSkip != null) __instance.panHoldToSkip.gameObject.SetActive(false);
+            OnlineGame.TrySkipPan();
+        }
+    }
+
     [HarmonyPatch(typeof(GameMenu), nameof(GameMenu.ShowPlayerReadyMenu))]
     internal static class ShowPlayerReadyMenuPatch
     {

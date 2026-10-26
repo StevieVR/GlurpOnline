@@ -33,6 +33,10 @@ namespace GlurpOnline.Net
         ObjOwner = 34,
         ObjState = 35,
         ObjEvent = 36,
+        PanSkip = 37,
+        GhostGrab = 38,
+        StartPress = 39,
+        StartGo = 40,
     }
 
     internal static class MsgInfo
@@ -50,13 +54,14 @@ namespace GlurpOnline.Net
                 case Msg.RoundReady:
                 case Msg.ObjState:
                 case Msg.ObjEvent:
+                case Msg.GhostGrab:
                     return true;
                 default:
                     return false;
             }
         }
 
-        public static bool IsForHostOnly(Msg m) => m == Msg.ObjClaim;
+        public static bool IsForHostOnly(Msg m) => m == Msg.ObjClaim || m == Msg.StartPress;
     }
 
     internal sealed class Member
