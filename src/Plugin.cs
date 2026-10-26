@@ -11,9 +11,9 @@ namespace GlurpOnline
     {
         public const string Guid = "com.glurponline.mod";
         public const string Name = "Glurp Online";
-        public const string Version = "1.2.0";
+        public const string Version = "1.2.1";
 
-        public const int ProtocolVersion = 5;
+        public const int ProtocolVersion = 6;
 
         public const string UpdateRepository = "StevieVR/GlurpOnline";
 

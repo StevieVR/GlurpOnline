@@ -35,6 +35,11 @@ namespace GlurpOnline.Game
             typeof(TargetObject), typeof(GlurpEvents.WheelSpin.RotationScoreObject), typeof(FinishBoxAllowedObject),
         };
 
+        internal static readonly Type[] OwnTypes =
+        {
+            typeof(GlurpEvents.LongThrow.ThrowObject), typeof(BowlsThrowObject), typeof(Dart), typeof(GlurpEvents.EggAndSpoon.EggObject),
+        };
+
         internal struct Pose
         {
             public float Time;
@@ -65,6 +70,7 @@ namespace GlurpOnline.Game
         private static readonly Dictionary<ReplayTracker, int> trackerKeys = new Dictionary<ReplayTracker, int>();
         private static readonly Dictionary<short, int> idCounts = new Dictionary<short, int>();
         private static readonly HashSet<Transform> scoring = new HashSet<Transform>();
+        private static readonly HashSet<Rigidbody2D> ownBodies = new HashSet<Rigidbody2D>();
         private static readonly HashSet<Rigidbody2D> jointed = new HashSet<Rigidbody2D>();
         private static float startedAt = -1f;
         private static float nextScan;
@@ -84,8 +90,11 @@ namespace GlurpOnline.Game
             trackerKeys.Clear();
             idCounts.Clear();
             scoring.Clear();
+            ownBodies.Clear();
             startedAt = -1f;
         }
+
+        public static bool IsShared(Rigidbody2D body) => body != null && byBody.ContainsKey(body);
 
         public static void Update()
         {
@@ -155,7 +164,7 @@ namespace GlurpOnline.Game
             return string.Join("/", parts.ToArray());
         }
 
-        private static bool IsPlayerPart(Transform t) =>
+        internal static bool IsPlayerPart(Transform t) =>
             t.GetComponentInParent<Guy>() != null || t.GetComponentInParent<MutatorManager>() != null;
 
         private static bool IsShareableBody(Rigidbody2D body) => WhyNotShared(body) == null;
@@ -176,6 +185,7 @@ namespace GlurpOnline.Game
             {
                 if (joint.connectedBody != null && IsPlayerPart(joint.connectedBody.transform)) return "attached to a player";
             }
+            if (ownBodies.Contains(body) || OwnTypes.Any(type => body.GetComponentInParent(type) != null)) return "a player's own";
             if (IsMeasured(body.transform)) return "measured by the score";
             bool scoringType = IsScoringType(body.transform);
             if (OnlineGame.Sharing != Mode.Everything && scoringType) return "scoring object";
@@ -198,6 +208,15 @@ namespace GlurpOnline.Game
 
         private static void CollectScoringObjects()
         {
+            foreach (var type in OwnTypes)
+            {
+                foreach (var own in UnityEngine.Object.FindObjectsOfType(type))
+                {
+                    var component = (Component)own;
+                    foreach (var rb in component.GetComponentsInChildren<Rigidbody2D>(true)) ownBodies.Add(rb);
+                    if (type.GetField("bodies")?.GetValue(own) is Rigidbody2D[] bodies) foreach (var rb in bodies) if (rb != null) ownBodies.Add(rb);
+                }
+            }
             foreach (var manager in UnityEngine.Object.FindObjectsOfType<GlurpEventScoreManager>())
             {
                 for (var type = manager.GetType(); type != null && type != typeof(MonoBehaviour); type = type.BaseType)

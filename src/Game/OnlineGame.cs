@@ -383,7 +383,7 @@ namespace GlurpOnline.Game
             ReplayPlayer.hatID = cur.hatID;
             if (!IsLocalTurn) receiver = new ReplayStreamReceiver();
             InGameUI.OnTurnSceneLoading();
-            Plugin.Log.LogInfo($"Turn r{TurnRound} p{TurnPlayer} ({cur.teamName}) local={IsLocalTurn}");
+            Plugin.Log.LogInfo($"Turn r{TurnRound} p{TurnPlayer} ({cur.teamName}) local={IsLocalTurn} event {EventSpec.From(EventRandomiser.currentEvent)}");
         }
 
         public static void OnEventSceneLoaded()
