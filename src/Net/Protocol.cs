@@ -37,6 +37,7 @@ namespace GlurpOnline.Net
         GhostGrab = 38,
         StartPress = 39,
         StartGo = 40,
+        Voice = 41,
     }
 
     internal static class MsgInfo
@@ -55,6 +56,7 @@ namespace GlurpOnline.Net
                 case Msg.ObjState:
                 case Msg.ObjEvent:
                 case Msg.GhostGrab:
+                case Msg.Voice:
                     return true;
                 default:
                     return false;
@@ -110,6 +112,7 @@ namespace GlurpOnline.Net
         public bool SeeEachOther = true;
         public int Sharing;
         public bool Collide;
+        public bool Voice = true;
 
         public bool AllAtOnce => Mode == 1;
 
@@ -123,6 +126,7 @@ namespace GlurpOnline.Net
             w.Write(SeeEachOther);
             w.Write((byte)Sharing);
             w.Write(Collide);
+            w.Write(Voice);
         }
 
         public static LobbySettings Read(PacketReader r) => new LobbySettings
@@ -135,6 +139,7 @@ namespace GlurpOnline.Net
             SeeEachOther = r.ReadBool(),
             Sharing = r.ReadByte(),
             Collide = r.ReadBool(),
+            Voice = r.ReadBool(),
         };
 
         public LobbySettings Clone() => (LobbySettings)MemberwiseClone();

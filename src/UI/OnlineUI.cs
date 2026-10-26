@@ -46,6 +46,7 @@ namespace GlurpOnline.UI
             public Image LeftColor, RightColor;
             public Image TagImage;
             public TMP_Text Tag;
+            public Image Speaking;
             public ulong MemberId;
         }
 
@@ -55,7 +56,7 @@ namespace GlurpOnline.UI
         private static readonly List<Component> lobbyRows = new List<Component>();
 
         private static MenuPanel gameSettingsPanel;
-        private static UIHorizontalOptions optMode, optGhosts, optSharing, optCollide;
+        private static UIHorizontalOptions optMode, optGhosts, optSharing, optCollide, optVoice;
         private static readonly List<UIHorizontalOptions> gameOptions = new List<UIHorizontalOptions>();
         private static TMP_Text gameSettingsInfo, gameSettingsInfo2;
         private static UIArrowButton lobbyArrow;
@@ -455,6 +456,7 @@ namespace GlurpOnline.UI
             SeeEachOther = Plugin.LobbySeeEachOther.Value,
             Sharing = Mathf.Clamp(Plugin.LobbySharing.Value, 0, 2),
             Collide = Plugin.LobbyCollide.Value,
+            Voice = Plugin.LobbyVoice.Value,
         };
 
         private static void HostSteamGame()
@@ -522,6 +524,7 @@ namespace GlurpOnline.UI
                     RightColor = right.GetComponent<Image>(),
                     TagImage = tag.GetComponent<Image>(),
                     Tag = tagLabel,
+                    Speaking = MakeSpeakingDot(go.transform.Find("Text")),
                 };
                 UIKit.OnClick(button, () => OnPlayerRowClicked(rowData));
                 playerRows.Add(rowData);
@@ -620,6 +623,7 @@ namespace GlurpOnline.UI
                     row.LeftColor.color = scheme != null ? scheme.secondary : UIKit.Grey;
                     row.RightColor.color = scheme != null ? scheme.primary : UIKit.Grey;
                     row.LeftColor.enabled = row.RightColor.enabled = true;
+                    row.Speaking.color = scheme != null ? scheme.primary : UIKit.Grey;
                     string tag = m.IsHost ? "HOST" : m.Ready ? "READY" : "NOT READY";
                     if (row.Tag.text != tag) UIKit.SetText(row.Tag, tag);
                     row.TagImage.color = m.IsHost ? UIKit.Pink : m.Ready ? UIKit.Mint : new Color(0.88f, 0.88f, 0.88f, 1f);
@@ -631,6 +635,7 @@ namespace GlurpOnline.UI
                 else
                 {
                     row.MemberId = 0;
+                    row.Speaking.enabled = false;
                     string label = i == 7 && members.Count > 8 ? $"+{members.Count - 7} MORE" : "OPEN SLOT";
                     if (row.Name.text != label) UIKit.SetText(row.Name, label);
                     row.LeftColor.enabled = row.RightColor.enabled = false;
@@ -740,10 +745,12 @@ namespace GlurpOnline.UI
             SetOptionNames(optSharing, SharingNames);
             optCollide = MakeOption(content, "PLAYERS COLLIDE", Vector2.zero, 1f, false);
             SetOptionNames(optCollide, OffOn);
-            gameOptions.AddRange(new[] { optMode, optGhosts, optSharing, optCollide });
+            optVoice = MakeOption(content, "VOICE CHAT", Vector2.zero, 1f, false);
+            SetOptionNames(optVoice, OffOn);
+            gameOptions.AddRange(new[] { optMode, optGhosts, optSharing, optCollide, optVoice });
             foreach (var opt in gameOptions) opt.OnValueChanged.AddListener(_ => OnSettingsEdited());
-            gameSettingsInfo = MakeLine(content, new Vector2(-2250f, -880f), 4500f);
-            gameSettingsInfo2 = MakeLine(content, new Vector2(-2250f, -1000f), 4500f);
+            gameSettingsInfo = MakeLine(content, new Vector2(-2250f, -1150f), 4500f);
+            gameSettingsInfo2 = MakeLine(content, new Vector2(-2250f, -1270f), 4500f);
             UIKit.SetActive(gameSettingsPanel.transform, "Container/Panel/Column", false);
         }
 
@@ -767,6 +774,7 @@ namespace GlurpOnline.UI
                 SetOptionIndex(optGhosts, settings.SeeEachOther ? 1 : 0);
                 SetOptionIndex(optSharing, settings.Sharing);
                 SetOptionIndex(optCollide, settings.Collide ? 1 : 0);
+                SetOptionIndex(optVoice, settings.Voice ? 1 : 0);
             }
             finally { suppressOptionEvents = false; }
 
@@ -777,11 +785,12 @@ namespace GlurpOnline.UI
             foreach (var opt in gameOptions) SetOptionEditable(opt, editable);
 
             float y = 1000f;
+            float spacing = gameOptions.Count(o => o.gameObject.activeSelf) > 4 ? 450f : 470f;
             foreach (var opt in gameOptions)
             {
                 if (!opt.gameObject.activeSelf) continue;
                 ((RectTransform)opt.transform).anchoredPosition = new Vector2(y * Skew, y);
-                y -= 470f;
+                y -= spacing;
             }
 
             DescribeSettings(settings, out string line1, out string line2);
@@ -813,6 +822,34 @@ namespace GlurpOnline.UI
                 : settings.Sharing == 2 ? (settings.Collide && settings.SeeEachOther ? "Everything is shared, targets and pickups too, and players bump into each other."
                                           : "Everything is shared, targets and pickups too.")
                 : "Nothing in the level is shared.";
+        }
+
+        private const float SpeakingDotSize = 76f;
+
+        private static Image MakeSpeakingDot(Transform nameText)
+        {
+            var go = new GameObject("Speaking", typeof(RectTransform), typeof(Image));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(nameText, false);
+            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(SpeakingDotSize, SpeakingDotSize);
+            var image = go.GetComponent<Image>();
+            image.sprite = Glyphs.Dot;
+            image.raycastTarget = false;
+            image.enabled = false;
+            return image;
+        }
+
+        private static void UpdateSpeakingDots()
+        {
+            foreach (var row in playerRows)
+            {
+                bool speaking = row.MemberId != 0 && row.Root.gameObject.activeInHierarchy && VoiceChat.IsSpeaking(row.MemberId);
+                if (row.Speaking.enabled != speaking) row.Speaking.enabled = speaking;
+                if (!speaking) continue;
+                var bounds = row.Name.textBounds;
+                row.Speaking.rectTransform.localPosition = new Vector3(bounds.min.x - SpeakingDotSize * 0.9f, bounds.center.y, 0f);
+            }
         }
 
         private static void SetRowAlpha(PlayerRow row, float alpha)
@@ -881,11 +918,13 @@ namespace GlurpOnline.UI
                 SeeEachOther = optGhosts.currentIndex == 1,
                 Sharing = optSharing.currentIndex,
                 Collide = optCollide.currentIndex == 1,
+                Voice = optVoice.currentIndex == 1,
             };
             Plugin.LobbyMode.Value = settings.Mode;
             Plugin.LobbySeeEachOther.Value = settings.SeeEachOther;
             Plugin.LobbySharing.Value = settings.Sharing;
             Plugin.LobbyCollide.Value = settings.Collide;
+            Plugin.LobbyVoice.Value = settings.Voice;
             Plugin.LobbyRounds.Value = settings.Rounds;
             Plugin.LobbyDifficulty.Value = settings.Difficulty;
             Plugin.LobbyPrivacy.Value = settings.Privacy;
@@ -1656,6 +1695,7 @@ namespace GlurpOnline.UI
             if (wantLan && !LanDiscovery.Listening) { LanDiscovery.StartListening(); RefreshDirect(); }
             else if (!wantLan && LanDiscovery.Listening) LanDiscovery.StopListening();
             if (lobbyPanel != null && Time.unscaledTime > nextLobbyRefresh && InStack(lobbyPanel)) RefreshLobby();
+            if (lobbyPanel != null && InStack(lobbyPanel)) UpdateSpeakingDots();
             if (Top() == browserPanel && !searching && Time.unscaledTime > nextBrowserRefresh) RefreshBrowser();
 
             if (!MenuIsIdle()) return;

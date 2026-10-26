@@ -65,6 +65,7 @@ namespace GlurpOnline.Game
             public GameObject OwnHolder;
             public readonly Dictionary<int, OwnCopy> OwnCopies = new Dictionary<int, OwnCopy>();
             public TextMeshPro Tag;
+            public SpriteRenderer SpeakingDot;
             public Transform Head;
             public GameManager.PlayerColorScheme Scheme;
             public int ColorIndex = -1;
@@ -468,6 +469,7 @@ namespace GlurpOnline.Game
             }
             ghost.Head = root.transform.Find("Body") ?? root.transform;
             ghost.Tag = MakeNameTag(root.transform);
+            ghost.SpeakingDot = MakeSpeakingDot(ghost.Tag.transform);
             return ghost;
         }
 
@@ -587,6 +589,7 @@ namespace GlurpOnline.Game
                 ghost.Tag.text = entry != null ? entry.Name : "";
                 ghost.Tag.color = new Color(source.primary.r, source.primary.g, source.primary.b, 0.9f);
             }
+            if (ghost.SpeakingDot != null) ghost.SpeakingDot.color = new Color(source.primary.r, source.primary.g, source.primary.b, 1f);
         }
 
         private static void Fade(Ghost ghost)
@@ -648,7 +651,45 @@ namespace GlurpOnline.Game
             {
                 foreach (var f in fields) f.Key.SetValue(modifier, f.Value);
             }
+            BuildArmAttachments(g.Guy.frontArm?.noodle);
+            BuildArmAttachments(g.Guy.backArm?.noodle);
+            Fade(g);
             foreach (var c in g.Root.GetComponentsInChildren<Collider2D>(true)) if (!g.Colliders.Contains(c)) c.gameObject.tag = "Untagged";
+        }
+
+        private static readonly System.Reflection.FieldInfo AttachmentPointsField =
+            typeof(GlurpAPI.APINoodle).GetField("attachmentPoints", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        private static void BuildArmAttachments(GlurpAPI.APINoodle noodle)
+        {
+            if (noodle == null || noodle.attachmentPrefabs == null || AttachmentPointsField == null) return;
+            var old = AttachmentPointsField.GetValue(noodle) as Transform[];
+            if ((old?.Length ?? 0) == noodle.attachmentPrefabs.Length) return;
+            if (old != null) foreach (var p in old) if (p != null) UnityEngine.Object.Destroy(p.gameObject);
+            var color = noodle is Noodle drawn ? drawn.color : Color.white;
+            var points = new Transform[noodle.attachmentPrefabs.Length];
+            for (int i = 0; i < points.Length; i++)
+            {
+                var point = new GameObject("Attachment Point").transform;
+                point.parent = noodle.transform;
+                point.localPosition = Vector3.zero;
+                points[i] = point;
+                var prefab = noodle.attachmentPrefabs[i];
+                if (prefab == null) continue;
+                var attachment = UnityEngine.Object.Instantiate(prefab, Vector3.zero, Quaternion.identity, point);
+                attachment.transform.localPosition = prefab.transform.position;
+                attachment.layer = noodle.gameObject.layer;
+                var sprite = attachment.GetComponent<SpriteRenderer>();
+                if (sprite == null) continue;
+                if (noodle.meshRenderer != null)
+                {
+                    sprite.sortingLayerName = noodle.meshRenderer.sortingLayerName;
+                    sprite.sortingOrder = noodle.meshRenderer.sortingOrder + noodle.attachmentSortingOrderModifier;
+                }
+                sprite.color = noodle.colorAttachments ? color : Color.white;
+            }
+            AttachmentPointsField.SetValue(noodle, points);
+            if (noodle.attachmentPointPositions != null && noodle.attachmentPointPositions.Length == 0) noodle.attachmentPointPositions = null;
         }
 
         private static void ApplyHat(Ghost g)
@@ -800,6 +841,40 @@ namespace GlurpOnline.Game
                 g.Tag.sortingLayerID = reference.sortingLayerID;
                 g.Tag.sortingOrder = 1000;
             }
+            PlaceSpeakingDot(g);
+        }
+
+        private static SpriteRenderer MakeSpeakingDot(Transform tag)
+        {
+            var go = new GameObject("Speaking");
+            go.transform.SetParent(tag, false);
+            var dot = go.AddComponent<SpriteRenderer>();
+            dot.sprite = UI.Glyphs.Dot;
+            dot.enabled = false;
+            return dot;
+        }
+
+        private static void PlaceSpeakingDot(Ghost g)
+        {
+            var dot = g.SpeakingDot;
+            if (dot == null) return;
+            bool speaking = VoiceChat.IsSpeaking(g.Owner) && !string.IsNullOrEmpty(g.Tag.text);
+            if (dot.enabled != speaking) dot.enabled = speaking;
+            if (!speaking) return;
+            var bounds = g.Tag.textBounds;
+            float size = bounds.size.y * 0.7f;
+            dot.transform.localScale = new Vector3(size, size, 1f);
+            dot.transform.localPosition = new Vector3(bounds.min.x - size * 0.95f, bounds.center.y, 0f);
+            dot.sortingLayerID = g.Tag.sortingLayerID;
+            dot.sortingOrder = g.Tag.sortingOrder + 1;
+        }
+
+        public static bool TryGetPosition(ulong owner, out Vector2 position)
+        {
+            position = default;
+            if (!Enabled || !ghosts.TryGetValue(owner, out var g) || g.Root == null || !g.Root.activeSelf || g.Head == null) return false;
+            position = g.Head.position;
+            return true;
         }
 
         public static void FixedUpdate()
