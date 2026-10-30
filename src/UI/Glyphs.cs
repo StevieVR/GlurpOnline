@@ -13,6 +13,8 @@ namespace GlurpOnline.UI
         public static Sprite Find => Get(FindDef);
         public static Sprite Direct => Get(DirectDef);
 
+        public const float DotFadeSpeed = 7f;
+
         public static Sprite Dot
         {
             get

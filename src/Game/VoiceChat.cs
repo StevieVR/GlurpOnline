@@ -121,7 +121,7 @@ namespace GlurpOnline.Game
         {
             var s = Session.Current;
             bool allowed = Allowed;
-            bool wanted = allowed && s.Members.Count > 1;
+            bool wanted = allowed && s.Members.Count > 1 && !Plugin.MuteMic.Value;
             if (wanted != recording) SetRecording(wanted);
             float now = Time.realtimeSinceStartup;
             if (recording && now >= nextSend
@@ -292,6 +292,7 @@ namespace GlurpOnline.Game
                 volume = (1f - t) * (1f - t);
                 pan = Mathf.Clamp((theirs.x - mine.x) / PanDistance, -1f, 1f) * MaxPan;
             }
+            volume *= Mathf.Clamp01(Plugin.VoiceVolume.Value);
             float step = Time.unscaledDeltaTime * 3f;
             lock (sp)
             {

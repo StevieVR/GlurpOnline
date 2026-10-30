@@ -371,6 +371,7 @@ namespace GlurpOnline.Game
             ResetTurn();
             GhostSync.OnSceneLoading();
             SharedObjects.OnSceneLoading();
+            LevelSync.OnSceneLoading();
             var cur = TurnManager.CurrentPlayer();
             if (cur == null) return;
             TurnRound = EventRandomiser.playlistIndex;
@@ -980,6 +981,9 @@ namespace GlurpOnline.Game
                         break;
                     case Msg.GhostGrab:
                         GhostSync.OnGhostGrab(origin, r);
+                        break;
+                    case Msg.LevelSync:
+                        LevelSync.OnMessage(origin, r);
                         break;
                 }
             }

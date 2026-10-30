@@ -38,6 +38,7 @@ namespace GlurpOnline.Net
         StartPress = 39,
         StartGo = 40,
         Voice = 41,
+        LevelSync = 42,
     }
 
     internal static class MsgInfo
@@ -57,6 +58,7 @@ namespace GlurpOnline.Net
                 case Msg.ObjEvent:
                 case Msg.GhostGrab:
                 case Msg.Voice:
+                case Msg.LevelSync:
                     return true;
                 default:
                     return false;

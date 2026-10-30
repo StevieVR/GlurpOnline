@@ -11,9 +11,9 @@ namespace GlurpOnline
     {
         public const string Guid = "com.glurponline.mod";
         public const string Name = "Glurp Online";
-        public const string Version = "1.3.0";
+        public const string Version = "1.4.0";
 
-        public const int ProtocolVersion = 7;
+        public const int ProtocolVersion = 8;
 
         public const string UpdateRepository = "StevieVR/GlurpOnline";
 
@@ -33,6 +33,8 @@ namespace GlurpOnline
         internal static ConfigEntry<int> LobbySharing;
         internal static ConfigEntry<bool> LobbyCollide;
         internal static ConfigEntry<bool> LobbyVoice;
+        internal static ConfigEntry<float> VoiceVolume;
+        internal static ConfigEntry<bool> MuteMic;
         internal static ConfigEntry<string> RecentAddresses;
         internal static ConfigEntry<bool> CheckForUpdates;
         internal static ConfigEntry<bool> PeerUpdates;
@@ -55,6 +57,8 @@ namespace GlurpOnline
             LobbySharing = Config.Bind("Lobby", "SharedObjects", 0, "When everyone plays at once: 0 = nothing shared, 1 = loose props, 2 = everything.");
             LobbyCollide = Config.Bind("Lobby", "PlayersCollide", false, "When sharing everything: players bump into each other.");
             LobbyVoice = Config.Bind("Lobby", "VoiceChat", true, "Voice chat when hosting: everyone in the lobby, and by distance while playing a round together.");
+            VoiceVolume = Config.Bind("Voice", "Volume", 1f, "How loud the other players' voices are (0 to 1).");
+            MuteMic = Config.Bind("Voice", "MuteMic", false, "Don't send your microphone to the other players.");
             RecentAddresses = Config.Bind("Direct Connect", "RecentAddresses", "", "Recently joined addresses, most recent first (comma separated).");
             CheckForUpdates = Config.Bind("Updates", "CheckForUpdates", true, "Look for a new Glurp Online release on GitHub when the game starts.");
             PeerUpdates = Config.Bind("Updates", "PeerUpdates", true,

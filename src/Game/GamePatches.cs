@@ -144,6 +144,40 @@ namespace GlurpOnline.Game
         private static bool Prefix(CollectObject __instance) => SharedObjects.ShouldCollect(__instance);
     }
 
+    [HarmonyPatch(typeof(CollectObjectSpawner), nameof(CollectObjectSpawner.Spawn))]
+    internal static class CollectRespawnPatch
+    {
+        private static bool Prefix(CollectObjectSpawner __instance, GameObject obj) => LevelSync.OnCollectSpawn(__instance, obj);
+    }
+
+    [HarmonyPatch(typeof(GlurpEvents.Tag.TagObjectManager), nameof(GlurpEvents.Tag.TagObjectManager.OnObjectTouched))]
+    internal static class TagTouchPatch
+    {
+        private static bool Prefix(GlurpEvents.Tag.TagObjectManager __instance, Collision2D collision) => LevelSync.OnTagTouched(__instance, collision);
+    }
+
+    [HarmonyPatch]
+    internal static class GhostSponsorPatches
+    {
+        [HarmonyPrefix, HarmonyPatch(typeof(Guy), "FixedUpdate")]
+        private static void GuyStep(Guy __instance) => GhostSync.OnGuyStep(__instance, false);
+
+        [HarmonyPrefix, HarmonyPatch(typeof(GuyModUpdater), "FixedUpdate")]
+        private static void SponsorStep(GuyModUpdater __instance) => GhostSync.OnGuyStep(__instance.guy, true);
+
+        [HarmonyPrefix, HarmonyPatch(typeof(GuyArm), nameof(GuyArm.Grab))]
+        private static void Grab(GuyArm __instance, ref bool grab)
+        {
+            if (grab && GhostSync.IsGhostArm(__instance)) grab = false;
+        }
+
+        [HarmonyPostfix, HarmonyPatch(typeof(LaserBullet), "Awake")]
+        private static void Bullet(LaserBullet __instance) => GhostSync.OnSponsorOutput(__instance);
+
+        [HarmonyPostfix, HarmonyPatch(typeof(Explosive), "Awake")]
+        private static void Bomb(Explosive __instance) => GhostSync.OnSponsorOutput(__instance);
+    }
+
     [HarmonyPatch]
     internal static class RecordEventPatches
     {

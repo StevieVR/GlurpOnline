@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using GlurpOnline.Net;
+using HarmonyLib;
 using TMPro;
 using UnityEngine;
 
@@ -59,6 +60,12 @@ namespace GlurpOnline.Game
             public bool SponsorApplied;
             public bool HatApplied;
             public GlurpAPI.Hat.GlurpHat Hat;
+            public GlurpAPI.Brand.MutatorManager Sponsor;
+            public bool SponsorStarted;
+            public byte Held, FrontCount, BackCount;
+            public int FrontPresses, BackPresses;
+            public bool WasFrontHeld, WasBackHeld, StepFrontDown, StepBackDown, StepFrontUp, StepBackUp;
+            public float InputStep = -1f;
             public readonly List<KeyValuePair<Collider2D, Collider2D>> Pending = new List<KeyValuePair<Collider2D, Collider2D>>();
             public readonly HashSet<Collider2D> KeptOff = new HashSet<Collider2D>();
             public int KeptOffBy;
@@ -77,6 +84,9 @@ namespace GlurpOnline.Game
         private static short nextGhostId = FirstGhostId;
 
         private static readonly Dictionary<ulong, Ghost> ghosts = new Dictionary<ulong, Ghost>();
+        private static readonly Dictionary<Guy, Ghost> ghostByGuy = new Dictionary<Guy, Ghost>();
+        private static readonly HashSet<Explosive> ghostBombs = new HashSet<Explosive>();
+        private static byte localHeld, localFrontCount, localBackCount;
         private static readonly Dictionary<Rigidbody2D, KeyValuePair<Ghost, int>> ghostBodies = new Dictionary<Rigidbody2D, KeyValuePair<Ghost, int>>();
         private static readonly List<UnityEngine.Object> loadedAssets = new List<UnityEngine.Object>();
         private static readonly Dictionary<string, GlurpAPI.Hat.HatList> hatLists = new Dictionary<string, GlurpAPI.Hat.HatList>();
@@ -146,6 +156,9 @@ namespace GlurpOnline.Game
         {
             ghosts.Clear();
             ghostBodies.Clear();
+            ghostByGuy.Clear();
+            ghostBombs.Clear();
+            localHeld = 0;
             heldBy.Clear();
             ownColliders.Clear();
             playerParts.Clear();
@@ -224,9 +237,12 @@ namespace GlurpOnline.Game
             holder.SetActive(false);
             var taken = new HashSet<Rigidbody2D>();
             var types = SharedObjects.OwnTypes;
-            for (int t = 0; t < types.Length; t++)
+            for (int t = 0; t <= types.Length; t++)
             {
-                var roots = UnityEngine.Object.FindObjectsOfType(types[t]).Cast<Component>()
+                var candidates = t < types.Length ? UnityEngine.Object.FindObjectsOfType(types[t]).Cast<Component>()
+                    : UnityEngine.Object.FindObjectOfType<GlurpEvents.Targets.Target>() == null ? Enumerable.Empty<Component>()
+                    : UnityEngine.Object.FindObjectsOfType<Rigidbody2D>().Where(rb => rb.bodyType == RigidbodyType2D.Dynamic && rb.CompareTag("Ball")).Cast<Component>();
+                var roots = candidates
                     .Where(c => !SharedObjects.IsPlayerPart(c.transform))
                     .OrderBy(c => PathOf(c.transform, null), StringComparer.Ordinal)
                     .ThenBy(c => Mathf.Round(c.transform.position.x * 100f)).ThenBy(c => Mathf.Round(c.transform.position.y * 100f))
@@ -376,6 +392,9 @@ namespace GlurpOnline.Game
                 w.Write(t != null ? t.eulerAngles.z : 0f);
             }
             WriteOwnObjects(w);
+            w.Write(localHeld);
+            w.Write(localFrontCount);
+            w.Write(localBackCount);
             s.Broadcast(w);
         }
 
@@ -390,14 +409,18 @@ namespace GlurpOnline.Game
             var poses = new Vector3[count];
             for (int i = 0; i < count; i++) poses[i] = new Vector3(r.ReadFloat(), r.ReadFloat(), r.ReadFloat());
             var own = ReadOwnObjects(r);
+            bool hasButtons = r.Remaining >= 3;
+            byte held = hasButtons ? r.ReadByte() : (byte)0, frontCount = hasButtons ? r.ReadByte() : (byte)0, backCount = hasButtons ? r.ReadByte() : (byte)0;
 
             if (!ghosts.TryGetValue(origin, out var ghost) || ghost.Root == null)
             {
                 ghost = Spawn(origin, poses[0]);
                 if (ghost == null) return;
                 ghosts[origin] = ghost;
+                if (ghost.Guy != null) ghostByGuy[ghost.Guy] = ghost;
             }
             if (ghost.Player != player || ghost.ColorIndex != colorIndex) Dress(ghost, player, colorIndex);
+            if (hasButtons) TakeButtons(ghost, held, frontCount, backCount);
             if (own != null)
             {
                 foreach (var key in own.Keys)
@@ -589,7 +612,7 @@ namespace GlurpOnline.Game
                 ghost.Tag.text = entry != null ? entry.Name : "";
                 ghost.Tag.color = new Color(source.primary.r, source.primary.g, source.primary.b, 0.9f);
             }
-            if (ghost.SpeakingDot != null) ghost.SpeakingDot.color = new Color(source.primary.r, source.primary.g, source.primary.b, 1f);
+            if (ghost.SpeakingDot != null) ghost.SpeakingDot.color = new Color(source.primary.r, source.primary.g, source.primary.b, ghost.SpeakingDot.color.a);
         }
 
         private static void Fade(Ghost ghost)
@@ -632,29 +655,200 @@ namespace GlurpOnline.Game
             g.SponsorApplied = true;
             if (g.Guy == null) return;
             g.Guy.mutator = null;
-            var modifier = EventRandomiser.currentMutator != null && !EventRandomiser.currentMutator.isNoMod ? EventRandomiser.currentMutator.modifier : null;
+            var mutator = EventRandomiser.currentMutator;
+            var modifier = mutator != null && !mutator.isNoMod ? mutator.modifier : null;
             if (modifier == null) return;
+            var own = (GlurpAPI.Brand.MutatorManager)MemberwiseCloneMethod.Invoke(modifier, null);
             var apply = modifier.GetType().GetMethod("Apply", new[] { typeof(GlurpAPI.APIGuy) });
-            if (apply == null) return;
-            var fields = new List<KeyValuePair<System.Reflection.FieldInfo, object>>();
-            for (var type = modifier.GetType(); type != null && type != typeof(object); type = type.BaseType)
+            try
             {
-                foreach (var f in type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public
-                                                 | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
-                {
-                    fields.Add(new KeyValuePair<System.Reflection.FieldInfo, object>(f, f.GetValue(modifier)));
-                }
+                if (apply != null) apply.Invoke(own, new object[] { g.Guy });
+                else if (!AimAtGhost(own, g)) return;
             }
-            try { apply.Invoke(modifier, new object[] { g.Guy }); }
-            catch (Exception e) { Plugin.Log.LogWarning($"Couldn't show the sponsor on another player: {e.InnerException?.Message ?? e.Message}"); }
-            finally
+            catch (Exception e)
             {
-                foreach (var f in fields) f.Key.SetValue(modifier, f.Value);
+                Plugin.Log.LogWarning($"Couldn't show the sponsor on another player: {e.InnerException?.Message ?? e.Message}");
+                return;
             }
+            var wrapper = (Mutator)MemberwiseCloneMethod.Invoke(mutator, null);
+            wrapper.modifier = own;
+            wrapper.hasBeenApplied = true;
+            g.Guy.mutator = wrapper;
+            g.Sponsor = own;
             BuildArmAttachments(g.Guy.frontArm?.noodle);
             BuildArmAttachments(g.Guy.backArm?.noodle);
             Fade(g);
-            foreach (var c in g.Root.GetComponentsInChildren<Collider2D>(true)) if (!g.Colliders.Contains(c)) c.gameObject.tag = "Untagged";
+            foreach (var c in g.Root.GetComponentsInChildren<Collider2D>(true))
+            {
+                if (g.Colliders.Contains(c)) continue;
+                c.gameObject.tag = "Untagged";
+                if (!c.isTrigger) MakeOutputTouchable(g, c);
+            }
+        }
+
+        private static void TakeButtons(Ghost g, byte held, byte frontCount, byte backCount)
+        {
+            if (g.InputStep >= 0f || g.Held != 0 || g.FrontCount != 0 || g.BackCount != 0)
+            {
+                g.FrontPresses = Math.Min(g.FrontPresses + (byte)(frontCount - g.FrontCount), 4);
+                g.BackPresses = Math.Min(g.BackPresses + (byte)(backCount - g.BackCount), 4);
+            }
+            g.Held = held;
+            g.FrontCount = frontCount;
+            g.BackCount = backCount;
+        }
+
+        public static void OnGuyStep(Guy guy, bool sponsorStep)
+        {
+            if (!Enabled || guy == null) return;
+            if (!ghostByGuy.TryGetValue(guy, out var g))
+            {
+                if (!sponsorStep || GameManager.currentEvent == null || guy != GameManager.currentEvent.guy) return;
+                if (guy.grabFrontButtonDown) localFrontCount++;
+                if (guy.grabBackButtonDown) localBackCount++;
+                localHeld = (byte)((guy.grabFront ? 1 : 0) | (guy.grabBack ? 2 : 0));
+                return;
+            }
+            if (g.InputStep != Time.fixedTime)
+            {
+                g.InputStep = Time.fixedTime;
+                bool front = (g.Held & 1) != 0, back = (g.Held & 2) != 0;
+                g.StepFrontDown = g.FrontPresses > 0;
+                if (g.StepFrontDown) g.FrontPresses--;
+                g.StepBackDown = g.BackPresses > 0;
+                if (g.StepBackDown) g.BackPresses--;
+                g.StepFrontUp = g.WasFrontHeld && !front;
+                g.StepBackUp = g.WasBackHeld && !back;
+                g.WasFrontHeld = front;
+                g.WasBackHeld = back;
+            }
+            guy.grabFront = (g.Held & 1) != 0;
+            guy.grabBack = (g.Held & 2) != 0;
+            guy.grabFrontButtonDown |= g.StepFrontDown;
+            guy.grabBackButtonDown |= g.StepBackDown;
+            guy.grabFrontButtonUp |= g.StepFrontUp;
+            guy.grabBackButtonUp |= g.StepBackUp;
+        }
+
+        public static bool IsGhostArm(GuyArm arm)
+        {
+            foreach (var g in ghostByGuy.Values)
+            {
+                if (g.Guy != null && (ReferenceEquals(g.Guy.frontArm, arm) || ReferenceEquals(g.Guy.backArm, arm))) return true;
+            }
+            return false;
+        }
+
+        private static readonly AccessTools.FieldRef<Explosive, bool> ReplayExplode = AccessTools.FieldRefAccess<Explosive, bool>("isReplayExplode");
+        private static bool explosionsHooked;
+
+        public static void OnSponsorOutput(Component output)
+        {
+            if (!Enabled || output == null || ghosts.Count == 0) return;
+            var g = OutputOwner(output);
+            if (g == null) return;
+            if (output is Explosive bomb)
+            {
+                ReplayExplode(bomb) = true;
+                ghostBombs.Add(bomb);
+                if (!explosionsHooked)
+                {
+                    Explosive.OnExplosion += OnGhostExplosion;
+                    explosionsHooked = true;
+                }
+            }
+            foreach (var c in output.GetComponentsInChildren<Collider2D>(true))
+            {
+                c.gameObject.tag = "Untagged";
+                if (!c.isTrigger) MakeOutputTouchable(g, c);
+            }
+        }
+
+        private static Ghost OutputOwner(Component output)
+        {
+            var guy = output.GetComponentInParent<Guy>();
+            if (guy != null) return ghostByGuy.TryGetValue(guy, out var holder) ? holder : null;
+            var local = GameManager.currentEvent != null ? GameManager.currentEvent.guy : null;
+            Vector2 at = output.transform.position;
+            float best = local != null ? Distance(local, at) : float.MaxValue;
+            Ghost found = null;
+            foreach (var g in ghosts.Values)
+            {
+                bool fires = output is LaserBullet ? g.Sponsor is GlurpBrands.GlurpLaserHands.GlurpLaserHandsMutator
+                                                   : g.Sponsor is GlurpBrands.GlurpPooBombs.GlurpPooBombsMutator;
+                if (!fires || g.Guy == null || g.Root == null || !g.Root.activeSelf) continue;
+                float d = Distance(g.Guy, at);
+                if (d < best)
+                {
+                    best = d;
+                    found = g;
+                }
+            }
+            return best < 2f ? found : null;
+        }
+
+        private static float Distance(GlurpAPI.APIGuy guy, Vector2 at)
+        {
+            float d = float.MaxValue;
+            foreach (var part in new[] { guy.bodyBody, guy.frontArm != null ? guy.frontArm.handBody : null, guy.backArm != null ? guy.backArm.handBody : null })
+            {
+                if (part != null) d = Mathf.Min(d, (part.position - at).magnitude);
+            }
+            return d;
+        }
+
+        private static void MakeOutputTouchable(Ghost g, Collider2D c)
+        {
+            if (c == null || !c.isActiveAndEnabled) return;
+            foreach (var mine in ownColliders) if (mine != null && mine.isActiveAndEnabled) Physics2D.IgnoreCollision(c, mine, true);
+            foreach (var part in g.Colliders) if (part != null && part.isActiveAndEnabled) Physics2D.IgnoreCollision(c, part, true);
+            var guy = GameManager.currentEvent != null ? GameManager.currentEvent.guy : null;
+            if (guy == null) return;
+            if (OnlineGame.Collide)
+            {
+                int layer = PhysicalLayer();
+                int main = guy.bodyBody != null ? guy.bodyBody.gameObject.layer : c.gameObject.layer;
+                if (layer >= 0 && Physics2D.GetIgnoreLayerCollision(c.gameObject.layer, main)) c.gameObject.layer = layer;
+                return;
+            }
+            foreach (var mine in guy.GetComponentsInChildren<Collider2D>()) if (!mine.isTrigger && mine.enabled) Physics2D.IgnoreCollision(c, mine, true);
+        }
+
+        private static void OnGhostExplosion(Explosive bomb)
+        {
+            if (bomb == null || !ghostBombs.Contains(bomb) || !OnlineGame.Collide || bomb.explosionTestCollider == null) return;
+            var guy = GameManager.currentEvent != null ? GameManager.currentEvent.guy : null;
+            if (guy == null) return;
+            foreach (var c in Physics2D.OverlapCircleAll(bomb.transform.position, bomb.radius))
+            {
+                var body = c.attachedRigidbody;
+                if (body == null || c.isTrigger || !c.transform.IsChildOf(guy.transform)) continue;
+                var d = bomb.explosionTestCollider.Distance(c);
+                body.AddForceAtPosition(-d.normal * (bomb.radius - d.distance) * bomb.force, d.pointB, ForceMode2D.Impulse);
+            }
+        }
+
+        private static readonly System.Reflection.MethodInfo MemberwiseCloneMethod =
+            typeof(object).GetMethod("MemberwiseClone", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        private static bool AimAtGhost(GlurpAPI.Brand.MutatorManager own, Ghost g)
+        {
+            if (!(own is GlurpBrands.GlurpPooBombs.GlurpPooBombsMutator)) return false;
+            var type = own.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            type.GetField("guy", flags)?.SetValue(own, g.Guy);
+            type.GetField("bodyCollider", flags)?.SetValue(own, g.Guy.bodyBody.GetComponent<Collider2D>());
+            type.GetField("faceAnimator", flags)?.SetValue(own, g.Guy.headBody.GetComponent<Animator>());
+            return true;
+        }
+
+        private static void StartSponsor(Ghost g)
+        {
+            g.SponsorStarted = true;
+            if (g.Sponsor == null) return;
+            var start = g.Sponsor.GetType().GetMethod(g.Sponsor is GlurpBrands.GlurpPooBombs.GlurpPooBombsMutator ? "OnReady" : "OnCountdownFinished", Type.EmptyTypes);
+            try { start?.Invoke(g.Sponsor, null); }
+            catch (Exception e) { Plugin.Log.LogWarning($"Couldn't start the sponsor on another player: {e.InnerException?.Message ?? e.Message}"); }
         }
 
         private static readonly System.Reflection.FieldInfo AttachmentPointsField =
@@ -786,6 +980,7 @@ namespace GlurpOnline.Game
             }
             if (!g.SponsorApplied && Time.frameCount > g.SpawnFrame + 1) ApplySponsor(g);
             if (!g.HatApplied && g.SponsorApplied) ApplyHat(g);
+            if (g.SponsorApplied && !g.SponsorStarted && GameManager.currentEvent != null && GameManager.currentEvent.hasEventStarted) StartSponsor(g);
 
             float t = now - RenderDelay;
             Snapshot a = g.Snapshots[0], b = last;
@@ -850,6 +1045,7 @@ namespace GlurpOnline.Game
             go.transform.SetParent(tag, false);
             var dot = go.AddComponent<SpriteRenderer>();
             dot.sprite = UI.Glyphs.Dot;
+            dot.color = new Color(1f, 1f, 1f, 0f);
             dot.enabled = false;
             return dot;
         }
@@ -859,8 +1055,13 @@ namespace GlurpOnline.Game
             var dot = g.SpeakingDot;
             if (dot == null) return;
             bool speaking = VoiceChat.IsSpeaking(g.Owner) && !string.IsNullOrEmpty(g.Tag.text);
-            if (dot.enabled != speaking) dot.enabled = speaking;
-            if (!speaking) return;
+            float full = OnlineGame.Sharing == SharedObjects.Mode.Everything ? 1f : GhostAlpha;
+            var color = dot.color;
+            color.a = Mathf.MoveTowards(color.a, speaking ? full : 0f, Time.unscaledDeltaTime * UI.Glyphs.DotFadeSpeed);
+            dot.color = color;
+            bool visible = color.a > 0.001f;
+            if (dot.enabled != visible) dot.enabled = visible;
+            if (!visible) return;
             var bounds = g.Tag.textBounds;
             float size = bounds.size.y * 0.7f;
             dot.transform.localScale = new Vector3(size, size, 1f);
@@ -868,6 +1069,9 @@ namespace GlurpOnline.Game
             dot.sortingLayerID = g.Tag.sortingLayerID;
             dot.sortingOrder = g.Tag.sortingOrder + 1;
         }
+
+        public static Guy GuyOf(ulong owner) =>
+            Enabled && ghosts.TryGetValue(owner, out var g) && g.Root != null && g.Root.activeSelf ? g.Guy : null;
 
         public static bool TryGetPosition(ulong owner, out Vector2 position)
         {

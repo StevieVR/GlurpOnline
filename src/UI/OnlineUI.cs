@@ -25,7 +25,7 @@ namespace GlurpOnline.UI
         private static readonly string[] OffOn = { "OFF", "ON" };
         private const float OptionTop = 1110f;
         private const float OptionSpacing = 330f;
-        private const float OptionX = 1560f;
+        private const float OptionX = 1480f;
         private const float OptionScale = 0.76f;
 
         private static readonly System.Reflection.MethodInfo ShowMenuMethod = AccessTools.Method(typeof(MainMenu), "ShowMenu");
@@ -382,9 +382,9 @@ namespace GlurpOnline.UI
             float width = ((RectTransform)row).rect.width;
             if (width < 100f) width = 7620f;
             const float scale = 0.72f;
-            PlaceCard(local, width * (1f / 6f) - 928f * scale + 60f, cardY, scale);
-            PlaceCard(card, width * (3f / 6f) - 928f * scale, cardY, scale);
-            PlaceCard(challenge, width * (5f / 6f) - 708f * scale - 60f, cardY, scale);
+            PlaceCard(local, width * (1f / 6f) - 928f * scale + 136f, cardY, scale);
+            PlaceCard(card, width * (3f / 6f) - 928f * scale + 152f, cardY, scale);
+            PlaceCard(challenge, width * (5f / 6f) - 708f * scale + 16f, cardY, scale);
 
             var localNav = local.navigation;
             localNav.selectOnRight = card;
@@ -623,7 +623,9 @@ namespace GlurpOnline.UI
                     row.LeftColor.color = scheme != null ? scheme.secondary : UIKit.Grey;
                     row.RightColor.color = scheme != null ? scheme.primary : UIKit.Grey;
                     row.LeftColor.enabled = row.RightColor.enabled = true;
-                    row.Speaking.color = scheme != null ? scheme.primary : UIKit.Grey;
+                    var dotColor = scheme != null ? scheme.primary : UIKit.Grey;
+                    dotColor.a = row.Speaking.color.a;
+                    row.Speaking.color = dotColor;
                     string tag = m.IsHost ? "HOST" : m.Ready ? "READY" : "NOT READY";
                     if (row.Tag.text != tag) UIKit.SetText(row.Tag, tag);
                     row.TagImage.color = m.IsHost ? UIKit.Pink : m.Ready ? UIKit.Mint : new Color(0.88f, 0.88f, 0.88f, 1f);
@@ -635,7 +637,6 @@ namespace GlurpOnline.UI
                 else
                 {
                     row.MemberId = 0;
-                    row.Speaking.enabled = false;
                     string label = i == 7 && members.Count > 8 ? $"+{members.Count - 7} MORE" : "OPEN SLOT";
                     if (row.Name.text != label) UIKit.SetText(row.Name, label);
                     row.LeftColor.enabled = row.RightColor.enabled = false;
@@ -836,6 +837,7 @@ namespace GlurpOnline.UI
             var image = go.GetComponent<Image>();
             image.sprite = Glyphs.Dot;
             image.raycastTarget = false;
+            image.color = new Color(1f, 1f, 1f, 0f);
             image.enabled = false;
             return image;
         }
@@ -845,8 +847,12 @@ namespace GlurpOnline.UI
             foreach (var row in playerRows)
             {
                 bool speaking = row.MemberId != 0 && row.Root.gameObject.activeInHierarchy && VoiceChat.IsSpeaking(row.MemberId);
-                if (row.Speaking.enabled != speaking) row.Speaking.enabled = speaking;
-                if (!speaking) continue;
+                var color = row.Speaking.color;
+                color.a = Mathf.MoveTowards(color.a, speaking ? 1f : 0f, Time.unscaledDeltaTime * Glyphs.DotFadeSpeed);
+                row.Speaking.color = color;
+                bool visible = color.a > 0.001f;
+                if (row.Speaking.enabled != visible) row.Speaking.enabled = visible;
+                if (!visible) continue;
                 var bounds = row.Name.textBounds;
                 row.Speaking.rectTransform.localPosition = new Vector3(bounds.min.x - SpeakingDotSize * 0.9f, bounds.center.y, 0f);
             }

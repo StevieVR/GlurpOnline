@@ -32,12 +32,13 @@ namespace GlurpOnline.Game
         private static readonly Type[] ScoringTypes =
         {
             typeof(GlurpEvents.Targets.Target), typeof(CollectObject), typeof(DestructableObject), typeof(BowlsTarget),
-            typeof(TargetObject), typeof(GlurpEvents.WheelSpin.RotationScoreObject), typeof(FinishBoxAllowedObject),
+            typeof(TargetObject), typeof(FinishBoxAllowedObject), typeof(GlurpEvents.Tag.CatchObject),
         };
 
         internal static readonly Type[] OwnTypes =
         {
             typeof(GlurpEvents.LongThrow.ThrowObject), typeof(BowlsThrowObject), typeof(Dart), typeof(GlurpEvents.EggAndSpoon.EggObject),
+            typeof(GlurpEvents.WheelSpin.RotationScoreObject),
         };
 
         internal struct Pose
@@ -54,6 +55,7 @@ namespace GlurpOnline.Game
             public int Key;
             public Rigidbody2D Body;
             public ulong Owner;
+            public bool Taken;
             public float OwnerSince;
             public ulong HostOwner;
             public float HostOwnedSince;
@@ -62,6 +64,7 @@ namespace GlurpOnline.Game
             public float SentRotation;
             public bool SentAsleep;
             public readonly List<Pose> Poses = new List<Pose>();
+            public Item[] Group;
         }
 
         private static readonly Dictionary<int, Item> items = new Dictionary<int, Item>();
@@ -72,7 +75,10 @@ namespace GlurpOnline.Game
         private static readonly HashSet<Transform> scoring = new HashSet<Transform>();
         private static readonly HashSet<Rigidbody2D> ownBodies = new HashSet<Rigidbody2D>();
         private static readonly HashSet<Rigidbody2D> jointed = new HashSet<Rigidbody2D>();
-        private static float startedAt = -1f;
+        private static readonly Dictionary<Rigidbody2D, int> jointGroup = new Dictionary<Rigidbody2D, int>();
+        private static readonly Dictionary<int, List<Rigidbody2D>> jointGroups = new Dictionary<int, List<Rigidbody2D>>();
+        private static bool targetLevel;
+        private static float startedAt = -1f, goAt = -1f;
         private static float nextScan;
         private static float nextSend;
         private static bool applyingRemote;
@@ -91,17 +97,53 @@ namespace GlurpOnline.Game
             idCounts.Clear();
             scoring.Clear();
             ownBodies.Clear();
-            startedAt = -1f;
+            jointGroup.Clear();
+            jointGroups.Clear();
+            targetLevel = false;
+            startedAt = goAt = -1f;
         }
 
         public static bool IsShared(Rigidbody2D body) => body != null && byBody.ContainsKey(body);
+
+        public static int KeyOf(Component c)
+        {
+            if (c == null) return 0;
+            var tracker = c.GetComponent<ReplayTracker>() ?? c.GetComponentInParent<ReplayTracker>();
+            return tracker != null && trackerKeys.TryGetValue(tracker, out int key) ? key : 0;
+        }
+
+        public static GameObject ByKey(int key) => trackers.TryGetValue(key, out var tracker) && tracker != null ? tracker.gameObject : null;
+
+        public static void AddSpawned(int key, Rigidbody2D body)
+        {
+            if (body == null || items.ContainsKey(key)) return;
+            var tracker = body.GetComponent<ReplayTracker>();
+            if (tracker != null)
+            {
+                trackerKeys[tracker] = key;
+                trackers[key] = tracker;
+            }
+            var item = NewItem(key, body);
+            items[key] = item;
+            byBody[body] = item;
+            var hook = body.gameObject.GetComponent<SharedBody>() ?? body.gameObject.AddComponent<SharedBody>();
+            hook.Item = item;
+        }
+
+        private static Item NewItem(int key, Rigidbody2D body)
+        {
+            ulong host = Session.Current?.HostId ?? 0;
+            return new Item { Key = key, Body = body, Owner = host, HostOwner = host, OwnerSince = -10f, HostOwnedSince = -10f };
+        }
 
         public static void Update()
         {
             if (!Active) return;
             float now = Time.realtimeSinceStartup;
             if (startedAt < 0f) startedAt = now;
-            if (now - startedAt < ScanFor && now >= nextScan)
+            if (goAt < 0f && GameManager.currentEvent.hasEventStarted) goAt = now;
+            bool scanning = now - startedAt < ScanFor || goAt >= 0f && now - goAt < ScanFor;
+            if (scanning && now >= nextScan)
             {
                 nextScan = now + 0.5f;
                 Scan();
@@ -124,6 +166,11 @@ namespace GlurpOnline.Game
         {
             if (scoring.Count == 0) CollectScoringObjects();
             jointed.Clear();
+            jointGroup.Clear();
+            jointGroups.Clear();
+            var parent = new Dictionary<Rigidbody2D, Rigidbody2D>();
+            Func<Rigidbody2D, Rigidbody2D> root = null;
+            root = b => parent[b] == b ? b : parent[b] = root(parent[b]);
             foreach (var joint in UnityEngine.Object.FindObjectsOfType<Joint2D>())
             {
                 var a = joint.attachedRigidbody;
@@ -131,6 +178,18 @@ namespace GlurpOnline.Game
                 if (a == null || b == null || a.bodyType == RigidbodyType2D.Static || b.bodyType == RigidbodyType2D.Static) continue;
                 jointed.Add(a);
                 jointed.Add(b);
+                if (!parent.ContainsKey(a)) parent[a] = a;
+                if (!parent.ContainsKey(b)) parent[b] = b;
+                parent[root(a)] = root(b);
+            }
+            var groupIds = new Dictionary<Rigidbody2D, int>();
+            foreach (var b in jointed)
+            {
+                var r = root(b);
+                if (!groupIds.TryGetValue(r, out int id)) groupIds[r] = id = groupIds.Count + 1;
+                jointGroup[b] = id;
+                if (!jointGroups.TryGetValue(id, out var members)) jointGroups[id] = members = new List<Rigidbody2D>();
+                members.Add(b);
             }
 
             var fresh = UnityEngine.Object.FindObjectsOfType<ReplayTracker>()
@@ -145,14 +204,21 @@ namespace GlurpOnline.Game
                 int key = (f.Id << 8) | (ordinal & 0xff);
                 trackerKeys[f.Tracker] = key;
                 trackers[key] = f.Tracker;
-
-                var body = f.Tracker.trackerBody;
-                if (body == null || byBody.ContainsKey(body) || !IsShareableBody(body)) continue;
-                var item = new Item { Key = key, Body = body };
-                items[key] = item;
+            }
+            foreach (var pair in trackers)
+            {
+                var body = pair.Value != null ? pair.Value.trackerBody : null;
+                if (body == null || items.ContainsKey(pair.Key) || byBody.ContainsKey(body) || !IsShareableBody(body)) continue;
+                var item = NewItem(pair.Key, body);
+                items[pair.Key] = item;
                 byBody[body] = item;
                 var hook = body.gameObject.GetComponent<SharedBody>() ?? body.gameObject.AddComponent<SharedBody>();
                 hook.Item = item;
+            }
+            foreach (var group in items.Values.Where(i => i.Body != null && jointGroup.ContainsKey(i.Body)).GroupBy(i => jointGroup[i.Body]))
+            {
+                var members = group.ToArray();
+                foreach (var member in members) member.Group = members.Length > 1 ? members : null;
             }
         }
 
@@ -173,7 +239,20 @@ namespace GlurpOnline.Game
         {
             if (body.bodyType != RigidbodyType2D.Dynamic) return "not dynamic (" + body.bodyType + ")";
             if (!body.simulated) return "not simulated";
-            if (jointed.Contains(body)) return "jointed";
+            if (jointed.Contains(body) && !SharedAsGroup(body)) return "jointed";
+            return WhyNotSharedAlone(body);
+        }
+
+        private static bool SharedAsGroup(Rigidbody2D body)
+        {
+            if (OnlineGame.Sharing != Mode.Everything || !jointGroup.TryGetValue(body, out int id) || !jointGroups.TryGetValue(id, out var members)) return false;
+            return members.Any(m => IsScoringType(m.transform))
+                && members.All(m => m.bodyType == RigidbodyType2D.Dynamic && m.simulated && !IsPlayerPart(m.transform)
+                                    && m.GetComponent<ReplayTracker>() != null && WhyNotSharedAlone(m) == null);
+        }
+
+        private static string WhyNotSharedAlone(Rigidbody2D body)
+        {
             if (body.GetComponentInParent<GlurpPushButton>() != null) return "push button";
             if (body.GetComponentInParent<StartBoxSquidgePusher>() != null || body.GetComponentInParent<StartBoxSquidgeExpander>() != null
                 || body.GetComponentInParent<FinishBoxSquidgePusher>() != null) return "start/finish box";
@@ -186,6 +265,7 @@ namespace GlurpOnline.Game
                 if (joint.connectedBody != null && IsPlayerPart(joint.connectedBody.transform)) return "attached to a player";
             }
             if (ownBodies.Contains(body) || OwnTypes.Any(type => body.GetComponentInParent(type) != null)) return "a player's own";
+            if (targetLevel && body.CompareTag("Ball")) return "a player's own";
             if (IsMeasured(body.transform)) return "measured by the score";
             bool scoringType = IsScoringType(body.transform);
             if (OnlineGame.Sharing != Mode.Everything && scoringType) return "scoring object";
@@ -208,6 +288,7 @@ namespace GlurpOnline.Game
 
         private static void CollectScoringObjects()
         {
+            targetLevel = UnityEngine.Object.FindObjectOfType<GlurpEvents.Targets.Target>() != null;
             foreach (var type in OwnTypes)
             {
                 foreach (var own in UnityEngine.Object.FindObjectsOfType(type))
@@ -266,7 +347,7 @@ namespace GlurpOnline.Game
 
             var s = Session.Current;
             if (s == null) return;
-            if (item.Owner == 0 || now - item.OwnerSince >= HoldTime) SetOwner(item, s.LocalId);
+            if (!item.Taken || now - item.OwnerSince >= HoldTime) SetOwner(item, s.LocalId);
             if (s.IsHost)
             {
                 HostConsiderClaim(item, s.LocalId, s);
@@ -303,8 +384,11 @@ namespace GlurpOnline.Game
 
         private static void HostAssign(Item item, ulong owner, Session s)
         {
-            item.HostOwner = owner;
-            item.HostOwnedSince = Time.realtimeSinceStartup;
+            foreach (var member in item.Group ?? new[] { item })
+            {
+                member.HostOwner = owner;
+                member.HostOwnedSince = Time.realtimeSinceStartup;
+            }
             s.Broadcast(OwnerMessage(item, owner, s));
             SetOwner(item, owner);
         }
@@ -320,6 +404,13 @@ namespace GlurpOnline.Game
 
         private static void SetOwner(Item item, ulong owner)
         {
+            if (item.Group == null) SetOwnerOne(item, owner);
+            else foreach (var member in item.Group) SetOwnerOne(member, owner);
+        }
+
+        private static void SetOwnerOne(Item item, ulong owner)
+        {
+            item.Taken = true;
             if (item.Owner == owner || item.Body == null) return;
             item.Owner = owner;
             item.OwnerSince = Time.realtimeSinceStartup;
@@ -342,14 +433,14 @@ namespace GlurpOnline.Game
         public static bool ShouldCountHit(Collision2D collision)
         {
             if (!Active || collision.rigidbody == null || !byBody.TryGetValue(collision.rigidbody, out var item)) return true;
-            return item.Owner == 0 || item.Owner == LocalId;
+            return !item.Taken || item.Owner == LocalId;
         }
 
         public static bool ShouldCollect(Component collectable)
         {
             if (!Active) return true;
             var body = collectable.GetComponentInParent<Rigidbody2D>();
-            return body == null || !byBody.TryGetValue(body, out var item) || item.Owner == 0 || item.Owner == LocalId;
+            return body == null || !byBody.TryGetValue(body, out var item) || !item.Taken || item.Owner == LocalId;
         }
 
         private static void SendStates()
