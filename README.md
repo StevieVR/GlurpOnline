@@ -15,7 +15,9 @@ Online multiplayer for **Drink More Glurp**. Host a game and play with friends o
     - **See each other**: the other players appear in your level, with their hat, their sponsor (lasers, boosts and bombs included) and a see-through copy of their throwing object or wheel
     - **Shared objects**: *None*, *Props* (boxes, balls and other loose objects are shared) or *Everything* (targets and pickups too, and players appear solid). With everything shared, everyone chases the same lit ball in Tag and collected balls come back for everyone
     - **Players collide**: with everything shared, players bump into and grab each other (your own throwing object stays yours alone)
-- **Voice chat**: talk to everyone in the lobby; while playing a round together you hear each other louder the closer you are. A dot in a player's colour beside their name shows who's talking, and the host can turn it off under **Game Settings**. Set the volume or mute your mic on the **Online** page of the game's **Settings**
+    - **Live scores**: the scoreboard in the top left shows everyone's score as they play
+- **Voice chat**: talk to everyone in the lobby; while playing a round together you hear each other louder the closer you are. A dot in a player's colour beside their name shows who's talking, and the host can turn it off under **Game Settings**. On the **Online** page of the game's **Settings** you can set the volume, mute your mic, and pick your microphone and speakers
+- **Stream mode** (on the same **Online** settings page): no IP address is ever shown, for streaming or recording
 - Up to 16 players, with several players per PC
 - **Updates itself**: checks for new releases when the game starts, and passes updates between friends when you join each other
 

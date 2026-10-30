@@ -985,6 +985,9 @@ namespace GlurpOnline.Game
                     case Msg.LevelSync:
                         LevelSync.OnMessage(origin, r);
                         break;
+                    case Msg.LiveScore:
+                        UI.LiveScores.OnMessage(r);
+                        break;
                 }
             }
             catch (Exception e)

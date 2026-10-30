@@ -22,6 +22,10 @@ namespace GlurpOnline.Game
         private const float MaxPan = 0.7f;
 
         private const byte CodecSteam = 0;
+        private const byte CodecAdpcm = 2;
+        private const float MicGate = 0.012f;
+        private const float MicHangover = 0.35f;
+        private const int OutputRate = 48000;
 
         private sealed class Speaker
         {
@@ -46,45 +50,72 @@ namespace GlurpOnline.Game
 
             private void OnAudioFilterRead(float[] data, int channels)
             {
-                var sp = Speaker;
-                if (sp == null || OutputRate <= 0) return;
-                float step = (float)SampleRate / OutputRate;
-                lock (sp)
+                if (Speaker == null || OutputRate <= 0 || ExternalOutput) return;
+                Render(Speaker, data, data.Length / channels, channels, OutputRate, false);
+            }
+        }
+
+        private static void Render(Speaker sp, float[] data, int frames, int channels, int rate, bool add)
+        {
+            float step = (float)SampleRate / rate;
+            lock (sp)
+            {
+                float left = sp.Volume * Mathf.Min(1f, 1f - sp.Pan), right = sp.Volume * Mathf.Min(1f, 1f + sp.Pan);
+                if (!sp.Playing && sp.Count >= (int)(sp.StartBuffered * SampleRate)) sp.Playing = true;
+                int size = sp.Ring.Length;
+                for (int i = 0; i < frames * channels; i += channels)
                 {
-                    float left = sp.Volume * Mathf.Min(1f, 1f - sp.Pan), right = sp.Volume * Mathf.Min(1f, 1f + sp.Pan);
-                    if (!sp.Playing && sp.Count >= (int)(sp.StartBuffered * SampleRate)) sp.Playing = true;
-                    int size = sp.Ring.Length;
-                    for (int i = 0; i < data.Length; i += channels)
+                    float v = 0f;
+                    if (sp.Playing)
                     {
-                        float v = 0f;
-                        if (sp.Playing)
+                        if (sp.Count < 2)
                         {
-                            if (sp.Count < 2)
+                            sp.Playing = false;
+                            sp.RanDryAt = Clock.Elapsed.TotalSeconds;
+                        }
+                        else
+                        {
+                            v = Mathf.Lerp(sp.Ring[sp.Start], sp.Ring[(sp.Start + 1) % size], sp.Between);
+                            sp.Between += step;
+                            while (sp.Between >= 1f && sp.Count > 1)
                             {
-                                sp.Playing = false;
-                                sp.RanDryAt = Clock.Elapsed.TotalSeconds;
-                            }
-                            else
-                            {
-                                v = Mathf.Lerp(sp.Ring[sp.Start], sp.Ring[(sp.Start + 1) % size], sp.Between);
-                                sp.Between += step;
-                                while (sp.Between >= 1f && sp.Count > 1)
-                                {
-                                    sp.Between -= 1f;
-                                    sp.Start = (sp.Start + 1) % size;
-                                    sp.Count--;
-                                }
+                                sp.Between -= 1f;
+                                sp.Start = (sp.Start + 1) % size;
+                                sp.Count--;
                             }
                         }
-                        data[i] = v * left;
-                        if (channels > 1) data[i + 1] = v * right;
-                        for (int c = 2; c < channels; c++) data[i + c] = v * sp.Volume;
                     }
+                    if (add)
+                    {
+                        data[i] += v * left;
+                        if (channels > 1) data[i + 1] += v * right;
+                        continue;
+                    }
+                    data[i] = v * left;
+                    if (channels > 1) data[i + 1] = v * right;
+                    for (int c = 2; c < channels; c++) data[i + c] = v * sp.Volume;
                 }
             }
         }
 
+        private static void RenderAll(float[] mix, int frames, int rate)
+        {
+            foreach (var sp in speakerList) Render(sp, mix, frames, 2, rate, true);
+        }
+
         private static readonly Dictionary<ulong, Speaker> speakers = new Dictionary<ulong, Speaker>();
+        private static volatile Speaker[] speakerList = new Speaker[0];
+        private static volatile bool ExternalOutput;
+        private static WaveOutput external;
+        private static string externalName = "";
+        private static MicCapture mic;
+        private static string micName;
+        private static string[] micDevices = new string[0];
+        private static float nextMicDevices;
+        private static float micOpenUntil;
+        private static readonly List<float> micSamples = new List<float>();
+        private static readonly Adpcm.Encoder micEncoder = new Adpcm.Encoder();
+        private static readonly float[] adpcm = new float[MicCapture.Rate];
         private static readonly System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
         private static GameObject root;
         private static bool recording;
@@ -122,14 +153,28 @@ namespace GlurpOnline.Game
             var s = Session.Current;
             bool allowed = Allowed;
             bool wanted = allowed && s.Members.Count > 1 && !Plugin.MuteMic.Value;
-            if (wanted != recording) SetRecording(wanted);
             float now = Time.realtimeSinceStartup;
-            if (recording && now >= nextSend
-               )
+            string device = wanted ? PickedMic(now) : null;
+            if (device != micName)
+            {
+                mic?.Close();
+                mic = device != null ? MicCapture.Open(device) : null;
+                micName = device;
+                micSamples.Clear();
+            }
+            bool steam = wanted && mic == null;
+            if (steam != recording) SetRecording(steam);
+            bool listening = true;
+            if (mic != null && listening)
+            {
+                CaptureMic(s, now);
+            }
+            else if (recording && listening && now >= nextSend)
             {
                 nextSend = now + SendInterval;
                 Capture(s, now);
             }
+            UpdateOutput(allowed);
             foreach (var id in speakers.Keys.ToList())
             {
                 if (!allowed || !s.Members.Any(m => m.Id == id)) Remove(id);
@@ -140,7 +185,61 @@ namespace GlurpOnline.Game
         private static void Shutdown()
         {
             if (recording) SetRecording(false);
+            mic?.Close();
+            mic = null;
+            micName = null;
+            UpdateOutput(false);
             foreach (var id in speakers.Keys.ToList()) Remove(id);
+        }
+
+        private static string PickedMic(float now)
+        {
+            string name = Plugin.InputDevice.Value;
+            if (string.IsNullOrEmpty(name)) return null;
+            if (now >= nextMicDevices)
+            {
+                nextMicDevices = now + 2f;
+                micDevices = MicCapture.Devices();
+            }
+            return Array.IndexOf(micDevices, name) >= 0 ? name : null;
+        }
+
+        private static void UpdateOutput(bool allowed)
+        {
+            string name = allowed ? Plugin.OutputDevice.Value ?? "" : "";
+            if (name == externalName) return;
+            external?.Close();
+            external = null;
+            externalName = name;
+            if (name.Length > 0) external = WaveOutput.Open(name, OutputRate, RenderAll);
+            ExternalOutput = external != null;
+        }
+
+        private static void CaptureMic(Session s, float now)
+        {
+            mic.Read(micSamples);
+            int frame = MicCapture.Rate / 25;
+            int used = 0;
+            while (micSamples.Count - used >= frame)
+            {
+                double sum = 0;
+                for (int i = used; i < used + frame; i++) sum += micSamples[i] * micSamples[i];
+                if (Math.Sqrt(sum / frame) > MicGate)
+                {
+                    micOpenUntil = now + MicHangover;
+                    localSpokeAt = now;
+                }
+                if (now < micOpenUntil)
+                {
+                    var w = new PacketWriter(Msg.Voice, s.LocalId);
+                    w.Write(CodecAdpcm);
+                    w.WriteBytes(micEncoder.Encode(micSamples, used, frame));
+                    s.Broadcast(w);
+                }
+                used += frame;
+            }
+            micSamples.RemoveRange(0, used);
+            if (micSamples.Count > MicCapture.Rate / 2) micSamples.Clear();
         }
 
         private static void SetRecording(bool on)
@@ -198,13 +297,26 @@ namespace GlurpOnline.Game
             byte codec = r.ReadByte();
             var data = r.ReadBytes();
             int n = 0;
+            bool talking = false;
             if (codec == CodecSteam)
             {
                 n = Decode(data, data.Length);
             }
+            else if (codec == CodecAdpcm)
+            {
+                int m = Adpcm.Decode(data, adpcm);
+                n = Math.Min(m * SampleRate / MicCapture.Rate, samples.Length);
+                for (int i = 0; i < n; i++)
+                {
+                    float t = i * (float)MicCapture.Rate / SampleRate;
+                    int j = (int)t;
+                    samples[i] = Mathf.Lerp(adpcm[j], adpcm[Math.Min(j + 1, m - 1)], t - j);
+                }
+                talking = n > 0;
+            }
             if (n == 0) return;
             var sp = SpeakerFor(origin);
-            if (Loud(n)) sp.LastVoice = Time.realtimeSinceStartup;
+            if (talking || Loud(n)) sp.LastVoice = Time.realtimeSinceStartup;
             lock (sp)
             {
                 AdaptBuffer(sp, Clock.Elapsed.TotalSeconds);
@@ -272,6 +384,7 @@ namespace GlurpOnline.Game
             output.Speaker = sp;
             sp.Source.Play();
             speakers[id] = sp;
+            speakerList = speakers.Values.ToArray();
             return sp;
         }
 
@@ -279,6 +392,7 @@ namespace GlurpOnline.Game
         {
             if (!speakers.TryGetValue(id, out var sp)) return;
             speakers.Remove(id);
+            speakerList = speakers.Values.ToArray();
             if (sp.Source != null && sp.Source.clip != null) UnityEngine.Object.Destroy(sp.Source.clip);
             if (sp.Object != null) UnityEngine.Object.Destroy(sp.Object);
         }

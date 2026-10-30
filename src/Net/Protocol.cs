@@ -39,6 +39,7 @@ namespace GlurpOnline.Net
         StartGo = 40,
         Voice = 41,
         LevelSync = 42,
+        LiveScore = 43,
     }
 
     internal static class MsgInfo
@@ -59,6 +60,7 @@ namespace GlurpOnline.Net
                 case Msg.GhostGrab:
                 case Msg.Voice:
                 case Msg.LevelSync:
+                case Msg.LiveScore:
                     return true;
                 default:
                     return false;

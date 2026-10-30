@@ -15,6 +15,7 @@ namespace GlurpOnline
             Step("lan", LanDiscovery.Update);
             Step("game", OnlineGame.Update);
             Step("voice", VoiceChat.Update);
+            Step("scores", LiveScores.Update);
             Step("ingame ui", InGameUI.Update);
             Step("menu ui", OnlineUI.Update);
             Step("updater", Updater.Update);

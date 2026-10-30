@@ -291,7 +291,7 @@ namespace GlurpOnline.Net
             AssignColors();
             WriteLobbyData();
             SetRichPresence();
-            Plugin.Log.LogInfo($"Hosting {Kind} lobby {(Kind == SessionKind.Steam ? LobbyId.ToString() : DirectAddress)}");
+            Plugin.Log.LogInfo($"Hosting {Kind} lobby {(Kind == SessionKind.Steam ? LobbyId.ToString() : Plugin.HideAddresses ? "(address hidden)" : DirectAddress)}");
             SessionJoined?.Invoke();
             LobbyChanged?.Invoke();
         }

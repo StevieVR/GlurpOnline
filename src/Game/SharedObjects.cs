@@ -32,13 +32,13 @@ namespace GlurpOnline.Game
         private static readonly Type[] ScoringTypes =
         {
             typeof(GlurpEvents.Targets.Target), typeof(CollectObject), typeof(DestructableObject), typeof(BowlsTarget),
-            typeof(TargetObject), typeof(FinishBoxAllowedObject), typeof(GlurpEvents.Tag.CatchObject),
+            typeof(TargetObject), typeof(GlurpEvents.Tag.CatchObject),
         };
 
         internal static readonly Type[] OwnTypes =
         {
             typeof(GlurpEvents.LongThrow.ThrowObject), typeof(BowlsThrowObject), typeof(Dart), typeof(GlurpEvents.EggAndSpoon.EggObject),
-            typeof(GlurpEvents.WheelSpin.RotationScoreObject),
+            typeof(GlurpEvents.WheelSpin.RotationScoreObject), typeof(FinishBoxAllowedObject),
         };
 
         internal struct Pose

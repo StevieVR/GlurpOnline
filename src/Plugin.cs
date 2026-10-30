@@ -11,9 +11,9 @@ namespace GlurpOnline
     {
         public const string Guid = "com.glurponline.mod";
         public const string Name = "Glurp Online";
-        public const string Version = "1.4.0";
+        public const string Version = "1.5.0";
 
-        public const int ProtocolVersion = 8;
+        public const int ProtocolVersion = 9;
 
         public const string UpdateRepository = "StevieVR/GlurpOnline";
 
@@ -35,6 +35,11 @@ namespace GlurpOnline
         internal static ConfigEntry<bool> LobbyVoice;
         internal static ConfigEntry<float> VoiceVolume;
         internal static ConfigEntry<bool> MuteMic;
+        internal static ConfigEntry<string> InputDevice;
+        internal static ConfigEntry<string> OutputDevice;
+        internal static ConfigEntry<bool> StreamMode;
+
+        internal static bool HideAddresses => StreamMode != null && StreamMode.Value;
         internal static ConfigEntry<string> RecentAddresses;
         internal static ConfigEntry<bool> CheckForUpdates;
         internal static ConfigEntry<bool> PeerUpdates;
@@ -59,6 +64,9 @@ namespace GlurpOnline
             LobbyVoice = Config.Bind("Lobby", "VoiceChat", true, "Voice chat when hosting: everyone in the lobby, and by distance while playing a round together.");
             VoiceVolume = Config.Bind("Voice", "Volume", 1f, "How loud the other players' voices are (0 to 1).");
             MuteMic = Config.Bind("Voice", "MuteMic", false, "Don't send your microphone to the other players.");
+            InputDevice = Config.Bind("Voice", "InputDevice", "", "Microphone to talk into (empty = the one Steam uses).");
+            OutputDevice = Config.Bind("Voice", "OutputDevice", "", "Where the other players' voices play (empty = with the game's sound).");
+            StreamMode = Config.Bind("Privacy", "StreamMode", false, "Never show an IP address anywhere in Glurp Online, for streaming or recording.");
             RecentAddresses = Config.Bind("Direct Connect", "RecentAddresses", "", "Recently joined addresses, most recent first (comma separated).");
             CheckForUpdates = Config.Bind("Updates", "CheckForUpdates", true, "Look for a new Glurp Online release on GitHub when the game starts.");
             PeerUpdates = Config.Bind("Updates", "PeerUpdates", true,

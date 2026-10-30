@@ -681,7 +681,7 @@ namespace GlurpOnline.UI
             if (!connected)
             {
                 arrowLabel = "…";
-                status = s == null ? "" : s.Kind == SessionKind.Direct ? $"Connecting to {s.DirectAddress}…" : "Talking to Steam…";
+                status = s == null ? "" : s.Kind != SessionKind.Direct ? "Talking to Steam…" : Plugin.HideAddresses ? "Connecting…" : $"Connecting to {s.DirectAddress}…";
                 hint = "";
             }
             else if (isHost)
@@ -692,7 +692,7 @@ namespace GlurpOnline.UI
                     : notReady > 0 ? $"{notReady} player{(notReady == 1 ? " isn't" : "s aren't")} ready yet."
                     : "Everyone's ready!";
                 hint = s.Kind == SessionKind.Steam ? "Friends can also join you from their Steam friends list."
-                    : $"Your address: {s.DirectAddress}";
+                    : Plugin.HideAddresses ? "Stream mode is on: your address is hidden. INVITE copies it." : $"Your address: {s.DirectAddress}";
             }
             else
             {
@@ -823,6 +823,26 @@ namespace GlurpOnline.UI
                 : settings.Sharing == 2 ? (settings.Collide && settings.SeeEachOther ? "Everything is shared, targets and pickups too, and players bump into each other."
                                           : "Everything is shared, targets and pickups too.")
                 : "Nothing in the level is shared.";
+        }
+
+        private static float nextBehindCheck;
+
+        private static void HideScreensBehind()
+        {
+            if (Time.unscaledTime < nextBehindCheck) return;
+            nextBehindCheck = Time.unscaledTime + 0.5f;
+            var top = Top();
+            if (top == null || !(top == lobbyPanel || top == hubPanel || top == browserPanel || top == directPanel || top == gameSettingsPanel)) return;
+            if (!MenuIsIdle() || MenuPanel.currentlyAnimating.Count > 0) return;
+            foreach (var panel in MenuStack(menu))
+            {
+                if (panel == null || panel == top) continue;
+                var group = panel.GetComponent<CanvasGroup>();
+                if (group == null || group.alpha <= 0.01f) continue;
+                Plugin.Log.LogInfo($"Menu: {panel.name} was still showing behind {top.name}; hiding it");
+                panel.isShowing = true;
+                panel.OnLeftTopOfStack();
+            }
         }
 
         private const float SpeakingDotSize = 76f;
@@ -995,7 +1015,7 @@ namespace GlurpOnline.UI
             var s = Session.Current;
             if (s == null || s.DirectAddress == null) return;
             GUIUtility.systemCopyBuffer = s.DirectAddress;
-            Toasts.Show("Copied " + s.DirectAddress);
+            Toasts.Show(Plugin.HideAddresses ? "Copied your address" : "Copied " + s.DirectAddress);
         }
 
         private sealed class InviteEntry
@@ -1054,7 +1074,7 @@ namespace GlurpOnline.UI
             inviteEntries.Clear();
             if (s != null && s.Kind == SessionKind.Direct && s.IsHost)
             {
-                inviteEntries.Add(new InviteEntry { Label = "COPY MY ADDRESS", Value = s.DirectAddress, Action = CopyAddress });
+                inviteEntries.Add(new InviteEntry { Label = "COPY MY ADDRESS", Value = Plugin.HideAddresses ? "HIDDEN" : s.DirectAddress, Action = CopyAddress });
             }
             if (Session.SteamAvailable && s != null)
             {
@@ -1513,7 +1533,7 @@ namespace GlurpOnline.UI
             {
                 if (lan.Any(g => g.Endpoint == recent || g.Address == recent)) continue;
                 string recentAddress = recent;
-                rows.Add(new KeyValuePair<string[], Action>(new[] { "RECENT", recentAddress }, () => JoinAddressString(recentAddress)));
+                rows.Add(new KeyValuePair<string[], Action>(new[] { "RECENT", Plugin.HideAddresses ? "HIDDEN" : recentAddress }, () => JoinAddressString(recentAddress)));
             }
 
             networkActions.Clear();
@@ -1536,9 +1556,11 @@ namespace GlurpOnline.UI
             if (directListTitle.text != title) UIKit.SetText(directListTitle, title);
 
             string address = Plugin.LastDirectAddress.Value.Trim();
-            SetButtonRow(directAddressRow, "JOIN ADDRESS", address.Length > 0 ? address : "TYPE ONE");
+            SetButtonRow(directAddressRow, "JOIN ADDRESS", address.Length == 0 ? "TYPE ONE" : Plugin.HideAddresses ? "HIDDEN" : address);
             SetButtonRow(directHostRow, "HOST A GAME", $"PORT {port}");
-            UIKit.SetText(directStatus, $"Your address is {Session.LocalAddressHint()}. Copied an address? Paste it with the button below.");
+            UIKit.SetText(directStatus, Plugin.HideAddresses
+                ? "Stream mode is on, so addresses are hidden. Copied an address? Paste it with the button below."
+                : $"Your address is {Session.LocalAddressHint()}. Copied an address? Paste it with the button below.");
             UIKit.SetText(directHint, $"For play over the internet, the host forwards TCP port {port} on their router.");
 
             nav.Add(directAddressRow);
@@ -1623,6 +1645,8 @@ namespace GlurpOnline.UI
             directJoinArrow.Select();
         }
 
+        private static TMP_InputField.ContentType keyboardContentType;
+
         private static void OpenKeyboard()
         {
             if (!MenuIsIdle() || keyboardOpen) return;
@@ -1632,7 +1656,10 @@ namespace GlurpOnline.UI
             gm.keyboard.SetMaxStringLength(40);
             gm.keyboard.RevertCaps();
             UIKit.SetText(gm.nameEntryTitle, "HOST ADDRESS");
+            keyboardContentType = gm.keyboard.inputField.contentType;
+            if (Plugin.HideAddresses) gm.keyboard.inputField.contentType = TMP_InputField.ContentType.Password;
             gm.keyboard.inputField.text = Plugin.LastDirectAddress.Value;
+            gm.keyboard.inputField.ForceLabelUpdate();
             gm.nameResultText.text = "";
             gm.nameEntryBackButton.gameObject.SetActive(true);
             gm.nameSuggestionPicker.gameObject.SetActive(false);
@@ -1666,6 +1693,8 @@ namespace GlurpOnline.UI
             var gm = GameMenu.singleton;
             gm.keyboard.OnSubmit.RemoveListener(OnAddressSubmitted);
             gm.keyboard.OnCancel.RemoveListener(OnAddressCancelled);
+            gm.keyboard.inputField.contentType = keyboardContentType;
+            gm.keyboard.inputField.ForceLabelUpdate();
             gm.keyboard.Configure(email: false);
             if (pop && menu != null && Top() == gm.nameEntryScreen) PopMenu();
         }
@@ -1702,6 +1731,7 @@ namespace GlurpOnline.UI
             else if (!wantLan && LanDiscovery.Listening) LanDiscovery.StopListening();
             if (lobbyPanel != null && Time.unscaledTime > nextLobbyRefresh && InStack(lobbyPanel)) RefreshLobby();
             if (lobbyPanel != null && InStack(lobbyPanel)) UpdateSpeakingDots();
+            HideScreensBehind();
             if (Top() == browserPanel && !searching && Time.unscaledTime > nextBrowserRefresh) RefreshBrowser();
 
             if (!MenuIsIdle()) return;
